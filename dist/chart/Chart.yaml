@@ -1,0 +1,19 @@
+apiVersion: v2
+name: krotos
+description: Namespaced operator that rotates database passwords stored in Vault and restarts the workloads using them
+type: application
+
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - kubernetes
+  - operator
+  - vault
+  - password-rotation
+  - postgresql
+  - mysql
+  - clickhouse
+
+annotations:
+  kubebuilder.io/generated-by: kubebuilder

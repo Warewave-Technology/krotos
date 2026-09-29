@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- krotos_v1alpha1_vaultconnection.yaml
+- krotos_v1alpha1_databasecredentialrotation.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

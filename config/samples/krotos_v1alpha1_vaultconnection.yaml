@@ -1,0 +1,18 @@
+apiVersion: krotos.warewave.io/v1alpha1
+kind: VaultConnection
+metadata:
+  labels:
+    app.kubernetes.io/name: krotos
+    app.kubernetes.io/managed-by: kustomize
+  name: main-vault
+spec:
+  address: https://vault.example.com:8200
+  auth:
+    kubernetes:
+      role: krotos
+      mountPath: kubernetes
+    # Alternatively, a static token:
+    # token:
+    #   secretRef:
+    #     name: vault-token
+    #     key: token
