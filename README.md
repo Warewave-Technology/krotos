@@ -178,31 +178,41 @@ krotos is installed **once per namespace** whose databases it rotates. Each inst
 Secrets, the `ExternalSecret`/`VaultStaticSecret`s and the workloads to restart therefore all
 live in the same namespace as the operator.
 
-### 4.2 Build the image
+### 4.2 Images and charts
+
+Every release publishes:
+
+| Artifact | Location |
+|---|---|
+| Image (linux/amd64, linux/arm64) | `ghcr.io/warewave-technology/krotos:<version>` (also `<major>.<minor>` and `latest`) |
+| Helm chart | `oci://ghcr.io/warewave-technology/charts/krotos` |
+| Single-file manifests | `install.yaml` on the [GitHub Release](https://github.com/Warewave-Technology/krotos/releases) |
+
+To build your own image instead:
 
 ```sh
 make docker-build docker-push IMG=<registry>/krotos:<tag>
-# multi-arch:
-make docker-buildx IMG=<registry>/krotos:<tag> PLATFORMS=linux/amd64,linux/arm64
+make docker-buildx IMG=<registry>/krotos:<tag>     # linux/amd64 + linux/arm64
 ```
 
 ### 4.3 Install with Helm
 
 ```sh
-helm upgrade --install krotos dist/chart \
-  --namespace team-a --create-namespace \
-  --set manager.image.repository=<registry>/krotos \
-  --set manager.image.tag=<tag>
+helm install krotos oci://ghcr.io/warewave-technology/charts/krotos --version 0.1.0 \
+  --namespace team-a --create-namespace
 ```
+
+The chart's default image is the published one with the chart's version. From a checkout, use
+`dist/chart` instead of the OCI reference; for your own image add
+`--set manager.image.repository=<registry>/krotos --set manager.image.tag=<tag>`.
 
 **CRDs are cluster-wide.** The first release installs them (`crd.enabled=true`; with
 `crd.keep=true` they survive `helm uninstall`). Install every further namespace with
 `--set crd.enabled=false`:
 
 ```sh
-helm upgrade --install krotos dist/chart -n team-b --create-namespace \
-  --set crd.enabled=false \
-  --set manager.image.repository=<registry>/krotos --set manager.image.tag=<tag>
+helm install krotos oci://ghcr.io/warewave-technology/charts/krotos --version 0.1.0 \
+  --namespace team-b --create-namespace --set crd.enabled=false
 ```
 
 **ServiceAccount name.** Vault's Kubernetes auth role must be bound to the operator's
@@ -222,7 +232,7 @@ Check with `kubectl get deploy -n <namespace> -l control-plane=controller-manage
 
 | Value | Default | Description |
 |---|---|---|
-| `manager.image.repository` | `controller` | Operator image. |
+| `manager.image.repository` | `ghcr.io/warewave-technology/krotos` | Operator image. |
 | `manager.image.tag` | chart `appVersion` | Image tag. |
 | `manager.image.pullPolicy` | `IfNotPresent` | |
 | `manager.imagePullSecrets` | – | Pull secrets for private registries. |
@@ -250,14 +260,16 @@ cluster-scoped objects the chart creates are the CRDs and, with secure metrics, 
 `metrics.enabled=false` the chart creates no `ClusterRole` at all — unless you enable the helper
 roles (`rbac.helpers.enabled=true`), which are `ClusterRole`s unless `rbac.namespaced=true`.
 
-### 4.4 Install with kustomize
+### 4.4 Install with plain manifests
+
+The release's `install.yaml` installs the CRDs and the operator into `krotos-system`:
 
 ```sh
-make deploy IMG=<registry>/krotos:<tag>     # into krotos-system
-make undeploy
+kubectl apply -f https://github.com/Warewave-Technology/krotos/releases/download/v0.1.0/install.yaml
 ```
 
-or `make build-installer IMG=...` to produce a single `dist/install.yaml`.
+From a checkout: `make deploy IMG=ghcr.io/warewave-technology/krotos:0.1.0` (and
+`make undeploy`), or `make build-installer IMG=...` to write `dist/install.yaml`.
 
 ### 4.5 Upgrades and uninstall
 
@@ -1355,6 +1367,20 @@ make manifests generate
 - `make test-e2e` creates the Kind cluster `krotos-test-e2e` with its own kubeconfig
   (`bin/krotos-test-e2e.kubeconfig`), refuses to run against any other context, and deletes the
   cluster afterwards (`E2E_KEEP_CLUSTER=true` keeps it).
+
+### Releasing
+
+Push a version tag; the `Release` workflow tests, then publishes the image, the chart and a
+GitHub Release with `install.yaml`:
+
+```sh
+git tag -a v0.2.0 -m "krotos v0.2.0"
+git push origin v0.2.0
+```
+
+Release notes are taken from `docs/release-notes/<tag>.md` when it exists, otherwise generated
+from the commits. Tags with a hyphen (`v0.2.0-rc.1`) become pre-releases and do not move
+`latest`.
 
 ### Adding an engine
 

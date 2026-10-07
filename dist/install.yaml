@@ -1299,7 +1299,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.serviceAccountName
-        image: controller:latest
+        image: ghcr.io/warewave-technology/krotos:latest
         livenessProbe:
           httpGet:
             path: /healthz
