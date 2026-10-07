@@ -31,6 +31,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/tools/events"
@@ -41,6 +42,7 @@ import (
 	"github.com/warewave/krotos/internal/engine"
 	"github.com/warewave/krotos/internal/metrics"
 	"github.com/warewave/krotos/internal/rotation"
+	"github.com/warewave/krotos/internal/secretsync"
 	"github.com/warewave/krotos/internal/vault"
 )
 
@@ -514,17 +516,112 @@ var _ = Describe("DatabaseCredentialRotation Controller", func() {
 		Expect(c.Message).To(ContainSubstring("Deployment/does-not-exist not found"))
 	})
 
-	It("does not start while its secretSync type is not supported", func() {
+	syncResource := func(apiVersion, kind, name string) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetAPIVersion(apiVersion)
+		u.SetKind(kind)
+		u.SetNamespace(testNamespace)
+		u.SetName(name)
+		Expect(k8sClient.Create(ctx, u)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, u) })
+		return u
+	}
+	syncedSecret := func(name, password string) {
+		s := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+			Data:       map[string][]byte{"password": []byte(password)},
+		}
+		Expect(k8sClient.Create(ctx, s)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, s) })
+	}
+	setSyncedSecret := func(name, password string) {
+		var s corev1.Secret
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: name}, &s)).To(Succeed())
+		s.Data["password"] = []byte(password)
+		Expect(k8sClient.Update(ctx, &s)).To(Succeed())
+	}
+	annotation := func(u *unstructured.Unstructured, key string) string {
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(u), u)).To(Succeed())
+		return u.GetAnnotations()[key]
+	}
+
+	It("triggers an ExternalSecret sync and restarts only after the Secret holds the new password", func() {
+		es := "orders-db-" + rand.String(4)
+		api := "api-" + rand.String(4)
+		newDeployment(api, nil)
+		u := syncResource("external-secrets.io/v1", "ExternalSecret", es)
+		syncedSecret(es, appPassword)
 		create(func(o *krotosv1alpha1.DatabaseCredentialRotation) {
 			o.Spec.SecretSync = krotosv1alpha1.SecretSync{
 				Type:           krotosv1alpha1.SecretSyncExternalSecret,
-				ExternalSecret: &krotosv1alpha1.SyncedSecretReference{Name: "orders-db", SecretName: "orders-db"},
+				ExternalSecret: &krotosv1alpha1.SyncedSecretReference{Name: es, SecretName: es},
+			}
+			o.Spec.RestartTargets = []krotosv1alpha1.RestartTarget{{Kind: "Deployment", Name: api}}
+		})
+
+		res, obj := reconcileOnce()
+		Expect(obj.Status.Step).To(Equal(krotosv1alpha1.StepVaultWritten))
+		Expect(obj.Status.SecretSyncStartTime).NotTo(BeNil())
+		Expect(obj.Status.Message).To(ContainSubstring("Waiting for ExternalSecret/" + es))
+		Expect(res.RequeueAfter).To(Equal(secretSyncPoll))
+		Expect(annotation(u, secretsync.AnnotationESOForceSync)).To(Equal(obj.Status.LastAttemptTime.UTC().Format(time.RFC3339)))
+		Expect(pendingExists()).To(BeFalse())
+		token, _ := restartedAt(api)
+		Expect(token).To(BeEmpty(), "restarted before the Secret was synced")
+
+		// External Secrets Operator copies the new password.
+		setSyncedSecret(es, db.appPassword())
+		_, obj = reconcileOnce()
+		Expect(obj.Status.Step).To(Equal(krotosv1alpha1.StepSecretSynced))
+		Expect(obj.Status.SecretSyncStartTime).To(BeNil())
+		token, _ = restartedAt(api)
+		Expect(token).NotTo(BeEmpty())
+	})
+
+	It("finishes as Degraded without restarting when the VaultStaticSecret does not sync in time", func() {
+		vss := "orders-db-" + rand.String(4)
+		api := "api-" + rand.String(4)
+		newDeployment(api, nil)
+		u := syncResource("secrets.hashicorp.com/v1beta1", "VaultStaticSecret", vss)
+		syncedSecret(vss, appPassword)
+		create(func(o *krotosv1alpha1.DatabaseCredentialRotation) {
+			o.Spec.SecretSync = krotosv1alpha1.SecretSync{
+				Type:              krotosv1alpha1.SecretSyncVaultStaticSecret,
+				VaultStaticSecret: &krotosv1alpha1.SyncedSecretReference{Name: vss, SecretName: vss},
+				Timeout:           metav1.Duration{Duration: time.Minute},
+			}
+			o.Spec.RestartTargets = []krotosv1alpha1.RestartTarget{{Kind: "Deployment", Name: api}}
+		})
+
+		_, obj := reconcileOnce()
+		Expect(obj.Status.Step).To(Equal(krotosv1alpha1.StepVaultWritten))
+		Expect(annotation(u, secretsync.AnnotationSyncRequestedAt)).NotTo(BeEmpty())
+
+		now = now.Add(2 * time.Minute)
+		_, obj = reconcileOnce()
+		Expect(obj.Status.Phase).To(Equal(krotosv1alpha1.PhaseIdle))
+		Expect(obj.Status.LastRotationTime).NotTo(BeNil())
+		c := condition(obj, krotosv1alpha1.ConditionDegraded)
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Message).To(ContainSubstring("Secret sync timed out"))
+		Expect(c.Message).To(ContainSubstring("workloads were not restarted"))
+		token, _ := restartedAt(api)
+		Expect(token).To(BeEmpty())
+	})
+
+	It("finishes as Degraded right away when the sync resource does not exist", func() {
+		create(func(o *krotosv1alpha1.DatabaseCredentialRotation) {
+			o.Spec.SecretSync = krotosv1alpha1.SecretSync{
+				Type:           krotosv1alpha1.SecretSyncExternalSecret,
+				ExternalSecret: &krotosv1alpha1.SyncedSecretReference{Name: "missing", SecretName: "missing"},
 			}
 		})
 
 		_, obj := reconcileOnce()
-		Expect(condition(obj, krotosv1alpha1.ConditionReady).Reason).To(Equal(ReasonSecretSyncPending))
-		Expect(db.appPassword()).To(Equal(appPassword))
+		Expect(obj.Status.Phase).To(Equal(krotosv1alpha1.PhaseIdle))
+		c := condition(obj, krotosv1alpha1.ConditionDegraded)
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Message).To(ContainSubstring("ExternalSecret/missing"))
 	})
 
 	It("counts a missing VaultConnection as a failed attempt", func() {

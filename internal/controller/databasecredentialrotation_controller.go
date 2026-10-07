@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -43,6 +44,7 @@ import (
 	"github.com/warewave/krotos/internal/restart"
 	"github.com/warewave/krotos/internal/rotation"
 	"github.com/warewave/krotos/internal/schedule"
+	"github.com/warewave/krotos/internal/secretsync"
 )
 
 const (
@@ -59,6 +61,10 @@ const (
 	rolloutPoll = 10 * time.Second
 	// defaultRolloutTimeout matches the API default for objects that predate it.
 	defaultRolloutTimeout = 10 * time.Minute
+	// secretSyncPoll is how often a synced Secret is checked.
+	secretSyncPoll = 5 * time.Second
+	// defaultSecretSyncTimeout matches the API default for objects that predate it.
+	defaultSecretSyncTimeout = 5 * time.Minute
 )
 
 // Condition reasons.
@@ -71,7 +77,6 @@ const (
 	ReasonRolledBack         = "RolledBack"
 	ReasonRotationStuck      = "RotationStuck"
 	ReasonRolloutIncomplete  = "RolloutIncomplete"
-	ReasonSecretSyncPending  = "SecretSyncNotSupported"
 	ReasonAsExpected         = "AsExpected"
 )
 
@@ -182,10 +187,6 @@ func (r *DatabaseCredentialRotationReconciler) reconcile(
 	case !engineOK:
 		setCondition(obj, krotosv1alpha1.ConditionReady, false, ReasonEngineNotSupported,
 			fmt.Sprintf("Engine %q is not supported yet", obj.Spec.Engine))
-	case obj.Spec.SecretSync.Type != "" && obj.Spec.SecretSync.Type != krotosv1alpha1.SecretSyncNone:
-		// TODO(M8): ExternalSecret and VaultStaticSecret sync.
-		setCondition(obj, krotosv1alpha1.ConditionReady, false, ReasonSecretSyncPending,
-			fmt.Sprintf("secretSync type %q is not supported yet", obj.Spec.SecretSync.Type))
 	default:
 		setCondition(obj, krotosv1alpha1.ConditionReady, true, ReasonSpecValid, "")
 	}
@@ -324,13 +325,21 @@ func (r *DatabaseCredentialRotationReconciler) afterVaultWritten(
 ) (ctrl.Result, error) {
 	st := &obj.Status
 	if st.Step == krotosv1alpha1.StepVaultWritten {
-		// No rollback is possible from here on, so the old and new passwords are not needed.
-		if err := target.Pending.Delete(ctx); err != nil {
-			st.Message = "Removing the pending passwords from Vault: " + err.Error()
-			return ctrl.Result{RequeueAfter: finalizeRetry}, nil
+		if st.SecretSyncStartTime == nil {
+			// No rollback is possible from here on, so the old and new passwords are not needed.
+			if err := target.Pending.Delete(ctx); err != nil {
+				st.Message = "Removing the pending passwords from Vault: " + err.Error()
+				return ctrl.Result{RequeueAfter: finalizeRetry}, nil
+			}
 		}
-		// secretSync types other than None are rejected by the Ready check for now.
+		if t := obj.Spec.SecretSync.Type; t != "" && t != krotosv1alpha1.SecretSyncNone {
+			res, synced, err := r.syncSecret(ctx, obj, sp, target)
+			if !synced {
+				return res, err
+			}
+		}
 		st.Step, st.Retries = krotosv1alpha1.StepSecretSynced, 0
+		st.SecretSyncStartTime = nil
 		st.RolloutStartTime = &metav1.Time{Time: r.now()}
 		if n := len(obj.Spec.RestartTargets); n > 0 {
 			r.event(obj, corev1.EventTypeNormal, "RestartingWorkloads", "Restarting %d restart target(s)", n)
@@ -340,6 +349,89 @@ func (r *DatabaseCredentialRotationReconciler) afterVaultWritten(
 		}
 	}
 	return r.restartWorkloads(ctx, obj, sp)
+}
+
+// syncSecret makes the ExternalSecret / VaultStaticSecret copy the new password
+// into its Kubernetes Secret and waits until it did. It returns synced=true to go on
+// with the restarts. Restarting before the Secret holds the new password would start
+// the workloads with the old one, so when the sync does not happen the rotation
+// finishes as Degraded without restarting anything.
+func (r *DatabaseCredentialRotationReconciler) syncSecret(
+	ctx context.Context, obj *krotosv1alpha1.DatabaseCredentialRotation, sp *statusPatcher, target *rotation.Target,
+) (ctrl.Result, bool, error) {
+	st := &obj.Status
+	spec := obj.Spec.SecretSync
+	name := secretsync.Describe(spec)
+	user := obj.Spec.Target.Username
+	// Keep the start time locally: the patch below replaces the status with the
+	// server's copy, which would drop it if the installed CRD predates the field.
+	started := st.SecretSyncStartTime
+	if started == nil {
+		started = &metav1.Time{Time: r.now()}
+		st.SecretSyncStartTime = started
+		r.event(obj, corev1.EventTypeNormal, "SyncingSecret", "Asking %s to sync the new password", name)
+		if err := sp.patch(ctx); err != nil {
+			return ctrl.Result{}, false, err
+		}
+	}
+	timeout := spec.Timeout.Duration
+	if timeout <= 0 {
+		timeout = defaultSecretSyncTimeout
+	}
+	timedOut := r.now().After(started.Add(timeout))
+	giveUp := func(problem string) (ctrl.Result, bool, error) {
+		res, err := r.finishSucceeded(ctx, obj, sp, fmt.Sprintf("Rotated the password of %q", user),
+			problem+"; workloads were not restarted")
+		return res, false, err
+	}
+	wait := func(msg string) (ctrl.Result, bool, error) {
+		if timedOut {
+			return giveUp(fmt.Sprintf("%s after %s: %s", "Secret sync timed out", timeout, msg))
+		}
+		st.Phase = krotosv1alpha1.PhaseRotating
+		st.Message = msg
+		return ctrl.Result{RequeueAfter: secretSyncPoll}, false, nil
+	}
+
+	syncer := &secretsync.Syncer{Client: r.Client, Reader: r.APIReader, Namespace: obj.Namespace}
+	if err := syncer.Trigger(ctx, spec, rotationToken(st)); err != nil {
+		if errors.Is(err, secretsync.ErrNotFound) {
+			return giveUp(err.Error())
+		}
+		return wait("Triggering the secret sync: " + err.Error())
+	}
+
+	current, err := target.Vault.Read(ctx, target.VaultRef)
+	if err != nil {
+		return wait("Reading the new password from Vault: " + err.Error())
+	}
+	password, _ := current.Data[target.PasswordKey].(string)
+	synced, err := syncer.Synced(ctx, spec, password)
+	switch {
+	case err != nil:
+		return wait("Checking the synced Secret: " + err.Error())
+	case !synced:
+		return wait(fmt.Sprintf("Waiting for %s to sync the new password into its Secret", name))
+	}
+	return ctrl.Result{}, true, nil
+}
+
+// rotationToken identifies the in-flight rotation by its start time, so that each
+// rotation triggers a sync and restarts a workload exactly once.
+func rotationToken(st *krotosv1alpha1.DatabaseCredentialRotationStatus) string {
+	started := st.LastAttemptTime
+	if started == nil {
+		started = st.RolloutStartTime
+	}
+	if started == nil {
+		started = st.SecretSyncStartTime
+	}
+	if started == nil {
+		// Not expected: the attempt time is set when a rotation starts. A constant
+		// token still triggers at most once.
+		return "unknown"
+	}
+	return started.UTC().Format(time.RFC3339)
 }
 
 // restartWorkloads restarts the restart targets once per rotation and waits for
@@ -354,12 +446,7 @@ func (r *DatabaseCredentialRotationReconciler) restartWorkloads(
 		return r.finishSucceeded(ctx, obj, sp, fmt.Sprintf("Rotated the password of %q; no restart targets configured", user), "")
 	}
 
-	// The rotation's start time identifies it, so each rotation restarts a workload exactly once.
-	started := st.RolloutStartTime
-	if st.LastAttemptTime != nil {
-		started = st.LastAttemptTime
-	}
-	token := started.UTC().Format(time.RFC3339)
+	token := rotationToken(st)
 	timeout := obj.Spec.RolloutTimeout.Duration
 	if timeout <= 0 {
 		timeout = defaultRolloutTimeout
@@ -419,7 +506,7 @@ func (r *DatabaseCredentialRotationReconciler) finishSucceeded(
 		metrics.RotationDuration.WithLabelValues(engineName).Observe(now.Sub(st.LastAttemptTime.Time).Seconds())
 	}
 	st.Step, st.Retries = krotosv1alpha1.StepNone, 0
-	st.RolloutStartTime = nil
+	st.RolloutStartTime, st.SecretSyncStartTime = nil, nil
 	st.LastRotationTime = &metav1.Time{Time: now}
 	st.ConsecutiveFailures = 0
 	st.Phase = krotosv1alpha1.PhaseIdle

@@ -216,12 +216,14 @@ Restart'ın işe yaraması, uygulamanın restart sonrası **yeni** parolayı gö
 Yöntem CRD'de `spec.secretSync.type` ile seçilir:
 
 - `None` (Vault Agent Injector / CSI) → pod restart'ta doğrudan Vault'tan okur, ek adım yok.
-- `ExternalSecret` → `force-sync` annotation'ı basılır, senkronlanan k8s Secret'ta yeni parola
-  görülene kadar beklenir, sonra restart.
-- `VaultStaticSecret` → VSO'nun refresh'i tetiklenir, yine hedef Secret'ta yeni değer beklenir.
+- `ExternalSecret` → ExternalSecret'a ESO'nun belgelenmiş `force-sync` annotation'ı basılır.
+- `VaultStaticSecret` → VaultStaticSecret'a `krotos.warewave.io/sync-requested-at` basılır; VSO
+  annotation değişikliğinde reconcile edip Vault'u yeniden okur (kaynak kodda doğrulandı).
 
-Akışta 4 ile 5 arasına **SecretSynced** adımı girer (type `None` ise atlanır).
-Senkron timeout'a düşerse parola zaten tutarlıdır (DB = Vault) → rollback yok, `Degraded`.
+Her iki durumda da hedef Secret'taki `secretKey`, Vault'taki yeni parolaya eşit olana kadar
+beklenir; sonra restart. `secretSync.timeout` içinde olmazsa ya da kaynak yoksa rotation
+tamamlanır, `Degraded` olur ve **restart yapılmaz** (eski parolayla açılmasınlar diye).
+Kaynaklar `unstructured` olarak ele alınır; ESO/VSO Go modüllerine bağımlılık yoktur.
 
 ## 7. Zamanlama mantığı
 
@@ -287,7 +289,7 @@ type Engine interface {
 | M5 ✅ | Workload restart + rollout bekleme |
 | M6 ✅ | MySQL/MariaDB ve ClickHouse engine'leri |
 | M7 ✅ | Metrikler, Event'ler, Helm chart, e2e (kind + testcontainers) |
-| M8 | ESO/VSO sync adımı (`secretSync`) |
+| M8 ✅ | ESO/VSO sync adımı (`secretSync`) |
 
 ## 12. Kararlar
 

@@ -136,6 +136,10 @@ func (in *DatabaseCredentialRotationStatus) DeepCopyInto(out *DatabaseCredential
 		in, out := &in.LastRotationTime, &out.LastRotationTime
 		*out = (*in).DeepCopy()
 	}
+	if in.SecretSyncStartTime != nil {
+		in, out := &in.SecretSyncStartTime, &out.SecretSyncStartTime
+		*out = (*in).DeepCopy()
+	}
 	if in.RolloutStartTime != nil {
 		in, out := &in.RolloutStartTime, &out.RolloutStartTime
 		*out = (*in).DeepCopy()

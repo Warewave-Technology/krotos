@@ -20,11 +20,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -68,6 +71,11 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
+		// Stand-ins for the External Secrets Operator and Vault Secrets Operator CRDs.
+		CRDs: []*apiextensionsv1.CustomResourceDefinition{
+			looseCRD("external-secrets.io", "ExternalSecret", "externalsecrets", "v1"),
+			looseCRD("secrets.hashicorp.com", "VaultStaticSecret", "vaultstaticsecrets", "v1beta1"),
+		},
 	}
 
 	// Retrieve the first found binary directory to allow running tests from IDEs
@@ -91,6 +99,28 @@ var _ = AfterSuite(func() {
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })
+
+// looseCRD defines a namespaced CRD that accepts any spec.
+func looseCRD(group, kind, plural, version string) *apiextensionsv1.CustomResourceDefinition {
+	return &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: plural + "." + group},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: group,
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
+				Kind: kind, ListKind: kind + "List", Plural: plural, Singular: strings.ToLower(kind),
+			},
+			Scope: apiextensionsv1.NamespaceScoped,
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+				Name: version, Served: true, Storage: true,
+				Schema: &apiextensionsv1.CustomResourceValidation{
+					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+						Type: "object", XPreserveUnknownFields: new(true),
+					},
+				},
+			}},
+		},
+	}
+}
 
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.
 // ENVTEST-based tests depend on specific binaries, usually located in paths set by

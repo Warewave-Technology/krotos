@@ -443,6 +443,11 @@ type DatabaseCredentialRotationStatus struct {
 	// +optional
 	LastRotationTime *metav1.Time `json:"lastRotationTime,omitempty"`
 
+	// secretSyncStartTime is when the in-flight rotation asked the sync operator
+	// (ExternalSecret / VaultStaticSecret) to copy the new password.
+	// +optional
+	SecretSyncStartTime *metav1.Time `json:"secretSyncStartTime,omitempty"`
+
 	// rolloutStartTime is when the workload restarts of the in-flight rotation began.
 	// +optional
 	RolloutStartTime *metav1.Time `json:"rolloutStartTime,omitempty"`

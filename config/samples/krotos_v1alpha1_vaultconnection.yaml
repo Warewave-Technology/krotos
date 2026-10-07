@@ -1,18 +1,49 @@
+# VaultConnection: how the operator reaches and logs in to Vault.
+# Every DatabaseCredentialRotation refers to one (or two) of these by name.
+#
+# Recommended: Kubernetes auth with the operator's own ServiceAccount.
+# Vault side (see README "Vault setup"):
+#   vault write auth/kubernetes/role/krotos \
+#     bound_service_account_names=krotos-controller-manager \
+#     bound_service_account_namespaces=<operator namespace> \
+#     token_policies=krotos token_ttl=1h
 apiVersion: krotos.warewave.io/v1alpha1
 kind: VaultConnection
 metadata:
-  labels:
-    app.kubernetes.io/name: krotos
-    app.kubernetes.io/managed-by: kustomize
   name: main-vault
+spec:
+  # Vault address, http:// or https://.
+  address: https://vault.example.com:8200
+  # Vault Enterprise namespace. Optional.
+  # namespace: team-a
+  tls:
+    # PEM CA bundle for Vault's certificate. Optional; the system roots are used otherwise.
+    caSecretRef:
+      name: vault-ca
+      key: ca.crt
+    # Never in production.
+    insecureSkipVerify: false
+  auth:
+    # Exactly one of kubernetes or token.
+    kubernetes:
+      # Vault role bound to the operator's ServiceAccount.
+      role: krotos
+      # Mount path of the Kubernetes auth method. Default: kubernetes
+      mountPath: kubernetes
+      # Only if the role requires a specific audience. Empty: the pod's mounted token is used.
+      # audience: vault
+---
+# Alternative: a static Vault token stored in a Secret.
+#
+#   kubectl create secret generic vault-token --from-literal=token=<token>
+apiVersion: krotos.warewave.io/v1alpha1
+kind: VaultConnection
+metadata:
+  name: token-vault
 spec:
   address: https://vault.example.com:8200
   auth:
-    kubernetes:
-      role: krotos
-      mountPath: kubernetes
-    # Alternatively, a static token:
-    # token:
-    #   secretRef:
-    #     name: vault-token
-    #     key: token
+    token:
+      secretRef:
+        name: vault-token
+        key: token

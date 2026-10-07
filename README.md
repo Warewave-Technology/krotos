@@ -71,7 +71,10 @@ repeated every 5 minutes, and every minute while failing.
 4. Login with the new password is verified.
 5. The new password is written to Vault with check-and-set; other keys in the secret are kept.
    The pending passwords are deleted from Vault right after, as no rollback is possible anymore.
-6. Every workload in `spec.restartTargets` is restarted like `kubectl rollout restart` (a
+6. If applications get the password through a synced Kubernetes Secret (`spec.secretSync`),
+   the sync is triggered and the operator waits until that Secret holds the new password
+   (see [Secret sync](#secret-sync)).
+7. Every workload in `spec.restartTargets` is restarted like `kubectl rollout restart` (a
    `krotos.warewave.io/restartedAt` pod template annotation) and the operator waits until
    the rollouts complete, up to `spec.rolloutTimeout` (default 10m).
 
@@ -95,6 +98,36 @@ until that rotation has finished or rolled back; no new rotation is started.
 
 Database connections use TLS (`require`) by default; set `spec.database.tls.mode: disable`
 to connect without it.
+
+### Secret sync
+
+`spec.secretSync.type` says how applications receive the password:
+
+| Type | Use when | What krotos does |
+|---|---|---|
+| `None` (default) | Pods read Vault directly (Vault Agent injector, CSI provider) | Restarts right away. |
+| `ExternalSecret` | External Secrets Operator syncs a Secret | Sets the `force-sync` annotation on the ExternalSecret. |
+| `VaultStaticSecret` | Vault Secrets Operator syncs a Secret | Sets `krotos.warewave.io/sync-requested-at` on the VaultStaticSecret (VSO re-reads Vault on any annotation change). |
+
+```yaml
+secretSync:
+  type: ExternalSecret
+  externalSecret:
+    name: orders-db        # the ExternalSecret
+    secretName: orders-db  # the Secret it writes
+    secretKey: password    # key holding the plain password (default "password")
+  timeout: 5m
+```
+
+The workloads are restarted only once `secretName`'s `secretKey` equals the new password in
+Vault; restarting earlier would start them with the old one. If that does not happen within
+`timeout`, or the sync resource does not exist, the rotation completes as `Degraded` and
+**no workload is restarted**. `secretKey` must hold the password itself, not a value
+templated from it (e.g. a DSN). Do not also let the sync operator restart the same workloads
+(VSO `rolloutRestartTargets`, Reloader, ...) or they are restarted twice.
+
+Vault Secrets Operator also defines a `VaultConnection` kind; use
+`vaultconnections.krotos.warewave.io` (or the short name `vconn`) with kubectl when both are installed.
 
 ### Engine notes
 
@@ -173,7 +206,7 @@ the current kubectl context is never changed, and refuses to run against any oth
 Set `E2E_KEEP_CLUSTER=true` to keep the cluster afterwards (`make cleanup-test-e2e` removes it).
 
 The Helm chart in `dist/chart` is generated from the kustomize manifests. After changing
-the API or RBAC, regenerate it with `kubebuilder edit --plugins=helm/v2-alpha`.
+the API or RBAC, regenerate it with `make helm-chart`; `make test` fails while it is out of date.
 
 ## License
 

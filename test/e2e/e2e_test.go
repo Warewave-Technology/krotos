@@ -19,6 +19,7 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -214,7 +215,7 @@ spec:
 // application's password and keep its pending passwords.
 const vaultPolicy = `
 path "secret/data/db/orders/master" { capabilities = ["read"] }
-path "secret/data/apps/orders/db"   { capabilities = ["read", "create", "update"] }
+path "secret/data/apps/*"          { capabilities = ["read", "create", "update"] }
 path "secret/data/krotos/pending/*"     { capabilities = ["read", "create", "update"] }
 path "secret/metadata/krotos/pending/*" { capabilities = ["delete"] }
 `
@@ -273,6 +274,163 @@ func jsonpath(kind, name, path string) string {
 	return mustKubectl("get", kind, name, "-n", operatorNS, "-o", "jsonpath="+path)
 }
 
+// syncManifest sets up a rotation whose password reaches the application through
+// External Secrets Operator or Vault Secrets Operator. Both refresh only hourly, so
+// a quick update proves that krotos triggered the sync.
+func syncManifest(name, user, syncType, syncKind string) string {
+	return fmt.Sprintf(`
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %[1]s-api
+  namespace: %[2]s
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: %[1]s-api}
+  template:
+    metadata:
+      labels: {app: %[1]s-api}
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: app
+        image: %[3]s
+        command: ["sleep", "infinity"]
+---
+apiVersion: krotos.warewave.io/v1alpha1
+kind: DatabaseCredentialRotation
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+  annotations:
+    krotos.warewave.io/rotate-now: "true"
+    krotos.warewave.io/ignore-window: "true"
+spec:
+  engine: postgresql
+  database:
+    host: postgres.%[4]s.svc
+    port: 5432
+    database: orders
+    tls: {mode: disable}
+  masterCredentials:
+    vault: {connectionRef: main-vault, path: db/orders/master}
+  target:
+    username: %[5]s
+    vault: {connectionRef: main-vault, path: apps/%[1]s/db}
+  schedule: {every: 30d}
+  window: {timezone: UTC, start: "00:00", duration: 24h}
+  secretSync:
+    type: %[6]s
+    %[7]s: {name: %[1]s-db, secretName: %[1]s-db}
+    timeout: 3m
+  restartTargets:
+  - {kind: Deployment, name: %[1]s-api}
+  rolloutTimeout: 3m
+`, name, operatorNS, postgresImage, depsNS, user, syncType, syncKind)
+}
+
+// esoManifest syncs apps/<name>/db with External Secrets Operator, authenticating with a token.
+func esoManifest(name string) string {
+	return fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: eso-vault-token
+  namespace: %[2]s
+stringData:
+  token: root
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: vault
+  namespace: %[2]s
+spec:
+  provider:
+    vault:
+      server: http://vault.%[3]s.svc:8200
+      path: secret
+      version: v2
+      auth:
+        tokenSecretRef: {name: eso-vault-token, key: token}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: %[1]s-db
+  namespace: %[2]s
+spec:
+  refreshInterval: 1h
+  secretStoreRef: {kind: SecretStore, name: vault}
+  target: {name: %[1]s-db}
+  data:
+  - secretKey: password
+    remoteRef: {key: apps/%[1]s/db, property: password}
+`, name, operatorNS, depsNS)
+}
+
+// vsoManifest syncs apps/<name>/db with Vault Secrets Operator, using Kubernetes auth.
+func vsoManifest(name string) string {
+	return fmt.Sprintf(`
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vso
+  namespace: %[2]s
+spec:
+  address: http://vault.%[3]s.svc:8200
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: vso
+  namespace: %[2]s
+spec:
+  vaultConnectionRef: vso
+  method: kubernetes
+  mount: kubernetes
+  kubernetes: {role: vso, serviceAccount: default}
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: %[1]s-db
+  namespace: %[2]s
+spec:
+  vaultAuthRef: vso
+  type: kv-v2
+  mount: secret
+  path: apps/%[1]s/db
+  refreshAfter: 1h
+  destination: {name: %[1]s-db, create: true}
+`, name, operatorNS, depsNS)
+}
+
+func secretValue(name, key string) string {
+	GinkgoHelper()
+	out, err := kubectl("get", "secret", name, "-n", operatorNS, "-o", "jsonpath={.data."+key+"}")
+	if err != nil || out == "" {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(out)
+	Expect(err).NotTo(HaveOccurred())
+	return string(decoded)
+}
+
+func waitRotated(name string) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		out, err := kubectl("get", "dcr", name, "-n", operatorNS, "-o",
+			`jsonpath={.status.phase}/{.status.lastRotationTime}/{.status.message}`)
+		g.Expect(err).NotTo(HaveOccurred())
+		parts := strings.SplitN(out, "/", 3)
+		g.Expect(parts).To(HaveLen(3))
+		g.Expect(parts[1]).NotTo(BeEmpty(), "phase %s: %s", parts[0], parts[2])
+		g.Expect(parts[0]).To(Equal("Idle"))
+	}, 5*time.Minute, 3*time.Second).Should(Succeed())
+}
+
 var _ = Describe("krotos", Ordered, func() {
 	var oldPassword, newPassword string
 
@@ -318,7 +476,7 @@ var _ = Describe("krotos", Ordered, func() {
 		}
 		for _, args := range [][]string{
 			{"logs", "-n", operatorNS, "deploy/" + release + "-controller-manager", "--tail=200"},
-			{"get", "vaultconnections,databasecredentialrotations", "-n", operatorNS, "-o", "yaml"},
+			{"get", "vaultconnections.krotos.warewave.io,databasecredentialrotations", "-n", operatorNS, "-o", "yaml"},
 			{"get", "events", "-n", operatorNS, "--sort-by=.lastTimestamp"},
 		} {
 			out, _ := kubectl(args...)
@@ -328,7 +486,8 @@ var _ = Describe("krotos", Ordered, func() {
 
 	It("logs in to Vault with Kubernetes auth", func() {
 		Eventually(func() string {
-			return jsonpath("vaultconnection", "main-vault", `{.status.conditions[?(@.type=="Ready")].status}`)
+			return jsonpath("vaultconnections.krotos.warewave.io", "main-vault",
+				`{.status.conditions[?(@.type=="Ready")].status}`)
 		}, 2*time.Minute, 2*time.Second).Should(Equal("True"))
 	})
 
@@ -399,5 +558,67 @@ var _ = Describe("krotos", Ordered, func() {
 		Expect(out).To(ContainSubstring(fmt.Sprintf(
 			`krotos_vault_connection_ready{name="main-vault",namespace=%q} 1`, operatorNS)))
 		Expect(out).To(ContainSubstring("krotos_rotation_duration_seconds_count"))
+	})
+
+	// testSecretSync rotates a password that reaches the application through a sync
+	// operator, and checks that the synced Secret was updated before the restart.
+	testSecretSync := func(name, user, syncType, syncKind string, setup func()) {
+		GinkgoHelper()
+		initial := "initial-" + name
+		mustKubectl("exec", "-n", depsNS, "deploy/postgres", "--", "psql", "-U", masterUser, "-d", "orders", "-c",
+			fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s'", user, initial))
+		mustVault("", "kv", "put", "secret/apps/"+name+"/db", "username="+user, "password="+initial)
+
+		setup()
+		By("waiting for the initial sync")
+		Eventually(func() string { return secretValue(name+"-db", "password") }, 3*time.Minute, 2*time.Second).
+			Should(Equal(initial))
+
+		By("rotating")
+		apply(syncManifest(name, user, syncType, syncKind))
+		waitRotated(name)
+		Expect(jsonpath("dcr", name, `{.status.conditions[?(@.type=="Degraded")].status}`)).To(Equal("False"),
+			jsonpath("dcr", name, `{.status.conditions[?(@.type=="Degraded")].message}`))
+
+		rotated := mustVault("", "kv", "get", "-field=password", "secret/apps/"+name+"/db")
+		Expect(rotated).NotTo(Equal(initial))
+		Expect(secretValue(name+"-db", "password")).To(Equal(rotated), "the synced Secret was not updated")
+		Expect(pgLogin(user, rotated)).To(Succeed())
+		Expect(jsonpath("deploy", name+"-api",
+			`{.spec.template.metadata.annotations.krotos\.warewave\.io/restartedAt}`)).NotTo(BeEmpty())
+	}
+
+	It("triggers an External Secrets Operator sync before restarting", func() {
+		By("installing External Secrets Operator")
+		_, err := run("helm", "upgrade", "--install", "external-secrets", "external-secrets",
+			"--repo", "https://charts.external-secrets.io",
+			"--namespace", "external-secrets", "--create-namespace", "--wait", "--timeout", "5m")
+		Expect(err).NotTo(HaveOccurred())
+
+		testSecretSync("orders-eso", "orders_eso", "ExternalSecret", "externalSecret", func() {
+			Eventually(func() error {
+				// The webhook may take a moment after the release is ready.
+				cmd := exec.Command("kubectl", "apply", "-f", "-")
+				cmd.Stdin = strings.NewReader(esoManifest("orders-eso"))
+				_, err := utils.Run(cmd)
+				return err
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+
+	It("triggers a Vault Secrets Operator sync before restarting", func() {
+		By("installing Vault Secrets Operator")
+		_, err := run("helm", "upgrade", "--install", "vault-secrets-operator", "vault-secrets-operator",
+			"--repo", "https://helm.releases.hashicorp.com",
+			"--namespace", "vault-secrets-operator-system", "--create-namespace", "--wait", "--timeout", "5m")
+		Expect(err).NotTo(HaveOccurred())
+		mustVault(`path "secret/data/apps/*" { capabilities = ["read"] }`, "policy", "write", "vso", "-")
+		mustVault("", "write", "auth/kubernetes/role/vso",
+			"bound_service_account_names=default", "bound_service_account_namespaces="+operatorNS,
+			"token_policies=vso", "token_ttl=1h")
+
+		testSecretSync("orders-vso", "orders_vso", "VaultStaticSecret", "vaultStaticSecret", func() {
+			apply(vsoManifest("orders-vso"))
+		})
 	})
 })

@@ -146,6 +146,10 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm krotos-builder
 	rm Dockerfile.cross
 
+.PHONY: helm-chart
+helm-chart: manifests kubebuilder ## Regenerate the Helm chart in dist/chart from the kustomize manifests.
+	"$(KUBEBUILDER)" edit --plugins=helm/v2-alpha
+
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
@@ -187,6 +191,7 @@ $(LOCALBIN):
 ## Tool Binaries
 KUBECTL ?= kubectl
 KIND ?= $(LOCALBIN)/kind
+KUBEBUILDER ?= $(LOCALBIN)/kubebuilder
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
@@ -208,6 +213,12 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
 
 GOLANGCI_LINT_VERSION ?= v2.13.1
 KIND_VERSION ?= v0.33.0
+KUBEBUILDER_VERSION ?= v4.16.0
+
+.PHONY: kubebuilder
+kubebuilder: $(KUBEBUILDER) ## Download kubebuilder locally if necessary.
+$(KUBEBUILDER): $(LOCALBIN)
+	$(call go-install-tool,$(KUBEBUILDER),sigs.k8s.io/kubebuilder/v4,$(KUBEBUILDER_VERSION))
 
 .PHONY: kind
 kind: $(KIND) ## Download kind locally if necessary.

@@ -643,6 +643,12 @@ spec:
                   in-flight rotation began.
                 format: date-time
                 type: string
+              secretSyncStartTime:
+                description: |-
+                  secretSyncStartTime is when the in-flight rotation asked the sync operator
+                  (ExternalSecret / VaultStaticSecret) to copy the new password.
+                format: date-time
+                type: string
               step:
                 description: step is the last completed step of the in-flight rotation.
                   Empty when idle.
