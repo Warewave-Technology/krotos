@@ -3,7 +3,7 @@
 **krotos** is a Kubernetes operator that rotates database passwords stored in HashiCorp Vault,
 on a schedule and only inside a change window, and then restarts the workloads that use them.
 
-- **Engines:** PostgreSQL, MySQL, MariaDB, ClickHouse.
+- **Engines:** PostgreSQL, MySQL, MariaDB, ClickHouse, Redis, Valkey.
 - **Vault:** KV v1 and v2, Kubernetes or token authentication.
 - **Delivery to applications:** Vault Agent / CSI (read Vault directly), External Secrets Operator,
   Vault Secrets Operator.
@@ -109,6 +109,7 @@ in `status.step`; the operator continues where it stopped after a crash or upgra
 | MySQL | 8.0+ | 8.4 |
 | MariaDB | 10.4+, `mysql_native_password` accounts | 11.4 |
 | ClickHouse | users managed by SQL (access management) | 25.8 |
+| Redis / Valkey | Redis 6+ / Valkey 7+ ACL users; standalone, replicas, Sentinel | Redis 7.4, 8.2; Valkey 8 |
 | External Secrets Operator (optional) | `external-secrets.io/v1` | 2.12 |
 | Vault Secrets Operator (optional) | `secrets.hashicorp.com/v1beta1` | 1.6 |
 
@@ -130,15 +131,16 @@ This creates a Kind cluster `krotos-dev` (on Docker) and installs:
 
 | Namespace | What |
 |---|---|
-| `krotos-deps` | Vault in dev mode (root token `root`), PostgreSQL 17, MySQL 8.4, ClickHouse 25.8 |
+| `krotos-deps` | Vault in dev mode (root token `root`), PostgreSQL 17, MySQL 8.4, ClickHouse 25.8, Redis 8.2 (primary + replica, aclfile) |
 | `external-secrets`, `vault-secrets-operator-system` | External Secrets Operator, Vault Secrets Operator |
-| `team-a` | the operator (Helm), `VaultConnection main-vault`, and three demo apps with rotations |
+| `team-a` | the operator (Helm), `VaultConnection main-vault`, and four demo apps with rotations |
 
 | Rotation | Engine | Application gets the password via | Schedule |
 |---|---|---|---|
 | `orders` | PostgreSQL | Vault directly (`secretSync: None`) | every 30 days |
 | `billing` | MySQL | External Secrets Operator → Secret `billing-db` | daily at 03:00 UTC |
 | `analytics` | ClickHouse | Vault Secrets Operator → Secret `analytics-db` | every 7 days |
+| `sessions` | Redis, primary + replica, master user from the [least-privilege template](#redis--valkey) | External Secrets Operator → Secret `sessions-redis` | every 7 days |
 
 The cluster's kubeconfig is written to `bin/krotos-dev.kubeconfig`; your current kubectl
 context is **not** changed.
@@ -436,6 +438,7 @@ The operator logs in and calls `lookup-self` every 5 minutes (every minute while
 | MySQL | `ALTER USER 'user'@'host' IDENTIFIED BY '…'` | `SELECT 1` as the user | The password; MySQL masks it in the general, slow and binary logs itself. |
 | MariaDB | `ALTER USER 'user'@'host' IDENTIFIED BY PASSWORD '*…'` | `SELECT 1` as the user | A `mysql_native_password` hash. MariaDB does **not** mask `IDENTIFIED BY` in its general log, so the password is never sent. |
 | ClickHouse | `ALTER USER user [ON CLUSTER c] IDENTIFIED WITH sha256_hash BY '…' SALT '…'` | `SELECT 1` as the user | A salted SHA-256 hash. |
+| Redis / Valkey | `ACL SETUSER user resetpass #<sha256>`, then `ACL SAVE` (or `CONFIG REWRITE`), on every node | `AUTH user password` on every node | The SHA-256 hash. Redis also keeps ACL commands out of `MONITOR`. |
 
 Integration tests check, with statement logging turned on (`log_statement=all`, the general
 log, `system.query_log`), that the plain password never appears in the server's logs.
@@ -445,17 +448,98 @@ work.
 
 ### 6.2 Master user privileges
 
-| Engine | The master user needs |
-|---|---|
-| PostgreSQL | Superuser, or `CREATEROLE`. From PostgreSQL 16, a `CREATEROLE` user may only alter roles on which it has `ADMIN OPTION`: `GRANT orders_app TO rotator WITH ADMIN OPTION;` |
-| MySQL | The global `CREATE USER` privilege (or `UPDATE` on the `mysql` schema). |
-| MariaDB | `CREATE USER`, and `SELECT` on `mysql.user` (the operator checks the account's authentication plugin). |
-| ClickHouse | `ALTER USER` (`GRANT ALTER USER ON *.* TO admin`); for `ON CLUSTER` also the `CLUSTER` privilege. |
+The master user only has to change passwords. Give krotos a dedicated user created from the
+templates below instead of an administrator. The templates live in
+[`docs/least-privilege/`](docs/least-privilege/) and the integration tests use them verbatim:
+they create the user from the template and rotate with it. Replace `krotos_rotator`,
+`change-me` and `orders_app`, and store the rotator's username and password as
+`masterCredentials`.
+
+The privileges are as narrow as each engine allows; where an engine has no narrower one, the
+notes say what else the rotator can do.
+
+#### PostgreSQL
+
+```sql
+-- PostgreSQL 16 and later.
+CREATE ROLE krotos_rotator LOGIN CREATEROLE PASSWORD 'change-me';
+-- ADMIN on the rotated role is what lets the rotator change its password.
+-- INHERIT FALSE and SET FALSE keep the rotator from using that role's privileges.
+GRANT orders_app TO krotos_rotator WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+```
+
+- Repeat the `GRANT` for every rotated role. The rotator cannot change roles it holds no
+  `ADMIN` on, the master included (tested).
+- `INHERIT FALSE, SET FALSE` keep it from using the rotated role's privileges.
+- Before PostgreSQL 16, `CREATEROLE` alone lets a role change the password of any role that is
+  not a superuser.
+
+#### MySQL
+
+```sql
+-- MySQL 8.0 and later.
+CREATE USER 'krotos_rotator'@'%' IDENTIFIED BY 'change-me';
+GRANT CREATE USER ON *.* TO 'krotos_rotator'@'%';
+```
+
+- `CREATE USER` is global: the rotator can change any account that lacks `SYSTEM_USER`.
+  Accounts holding `SYSTEM_USER`, such as `root` in MySQL 8, stay out of its reach (tested).
+  Never grant the rotator `SYSTEM_USER`.
+- It needs no privilege on the application's database: the operator connects without selecting
+  one.
+
+#### MariaDB
+
+```sql
+-- MariaDB 10.4 and later.
+CREATE USER 'krotos_rotator'@'%' IDENTIFIED BY 'change-me';
+GRANT CREATE USER ON *.* TO 'krotos_rotator'@'%';
+-- Only these columns: enough to check the account's authentication plugin,
+-- without access to password hashes.
+GRANT SELECT (User, Host, plugin) ON mysql.user TO 'krotos_rotator'@'%';
+```
+
+- The column privilege lets it read an account's authentication plugin, not password hashes
+  (tested).
+- MariaDB has no `SYSTEM_USER`: with `CREATE USER` the rotator can change any account, `root`
+  included. Protect its credentials like an administrator's.
+
+#### ClickHouse
+
+```sql
+-- ClickHouse, SQL-managed users.
+CREATE USER krotos_rotator IDENTIFIED WITH sha256_password BY 'change-me';
+GRANT ALTER USER ON *.* TO krotos_rotator;
+```
+
+- `ALTER USER ON *.*` covers every SQL-managed user. Users defined in `users.xml` cannot be
+  changed through SQL by anyone.
+- With `spec.database.clickhouse.cluster`, also `GRANT CLUSTER ON *.* TO krotos_rotator;` (not
+  covered by the tests).
+
+#### Redis / Valkey
+
+```text
+ACL SETUSER krotos_rotator on >change-me resetkeys resetchannels -@all +ping +config|get +acl|setuser +acl|save
+```
+
+With `persistence: ConfigRewrite`, also:
+
+```text
+ACL SETUSER krotos_rotator +info +config|rewrite
+```
+
+- Create the rotator on every server in `database.redis.nodes` too, and persist it (`ACL SAVE`
+  or `CONFIG REWRITE`).
+- It cannot read or write data (tested: `NOPERM`).
+- `acl|setuser` lets it change any user's rules, its own included; Redis has no narrower
+  permission, so in practice this is administrative access. Protect its credentials like an
+  administrator's.
 
 ### 6.3 The rotated user
 
 - It must exist, and the password in Vault must be its **current** password.
-- It must be able to log in to `spec.database.database` **from the operator's pod**:
+- It must be able to log in to `spec.database.database` (Redis: the server) **from the operator's pod**:
   `pg_hba.conf`, MySQL host patterns, network policies and grants all apply (MySQL needs at
   least one privilege on the database to select it, ClickHouse needs a grant on it).
 - **PostgreSQL:** the stored password becomes a SCRAM verifier. Clients must support SCRAM
@@ -472,6 +556,27 @@ work.
   `users.xml` / `users.d` fail with *"… storage is readonly"*. The new hash replaces **all** of
   the user's authentication methods. For a cluster whose access storage is not replicated, set
   `spec.database.clickhouse.cluster` so the statement runs `ON CLUSTER`.
+- **Redis / Valkey:** ACL users of Redis 6+ and Valkey; use `default` for a server that only
+  has `requirepass`. Only the user's passwords are replaced; its other ACL rules stay. The login
+  check sends nothing but `AUTH`, so the user needs no other command.
+  - **Persistence.** ACL changes live in memory; a restarted server would come back with the
+    old password while Vault holds the new one. `spec.database.redis.persistence` decides:
+
+    | Value | Behavior |
+    |---|---|
+    | `Auto` (default) | `ACL SAVE` when the server has an `aclfile`; otherwise the rotation is refused before anything changes. |
+    | `ACLFile` | `ACL SAVE`; refused when there is no `aclfile`. |
+    | `ConfigRewrite` | `CONFIG REWRITE`; refused when the server has no config file. |
+    | `None` | In memory only; the old password returns after a restart. For pure caches. |
+
+    `Auto` never chooses `CONFIG REWRITE`: it rewrites the whole config file, including runtime
+    `CONFIG SET` changes and command-line arguments. With the official Redis 8 image it writes
+    the bundled modules into the file, and the server no longer starts (found in testing).
+    Prefer an `aclfile`.
+  - **Replicas and Sentinel.** ACL changes are not replicated (tested): list every server in
+    `spec.database.redis.nodes`. The password is changed, persisted and verified on each.
+  - **Not supported yet:** Redis Cluster, and managed services (ElastiCache, MemoryDB, Azure
+    Cache for Redis, Memorystore), which manage users through their own APIs.
 
 ### 6.4 TLS to the database
 
@@ -632,7 +737,7 @@ One object rotates the password of **one** database user.
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `engine` | `postgresql` \| `mysql` \| `clickhouse` | yes | | Use `mysql` for MariaDB too. |
+| `engine` | `postgresql` \| `mysql` \| `clickhouse` \| `redis` | yes | | Use `mysql` for MariaDB and `redis` for Valkey. |
 | `suspend` | bool | | `false` | Stop starting new rotations. A rotation in progress is finished. |
 | `database` | object | yes | | See below. |
 | `masterCredentials` | object | yes | | See below. |
@@ -655,6 +760,8 @@ One object rotates the password of **one** database user.
 | `tls.caSecretRef.name` / `.key` | string | for `verify-ca`, `verify-full` | | PEM CA bundle. |
 | `clickhouse.cluster` | string | | | Run `ALTER USER … ON CLUSTER <cluster>`. Only allowed with `engine: clickhouse`. |
 | `clickhouse.protocol` | `native` \| `http` | | `native` | Use the port that matches the protocol (native 9000/9440, HTTP 8123/8443). |
+| `redis.persistence` | `Auto` \| `ACLFile` \| `ConfigRewrite` \| `None` | | `Auto` | How the change survives a restart; see [6.3](#63-the-rotated-user). Only allowed with `engine: redis`. |
+| `redis.nodes` | list of `host:port` (max 16) | | | Further servers that get the same change, such as replicas. |
 
 #### `masterCredentials` (exactly one of `vault` or `secretRef`)
 
@@ -746,7 +853,8 @@ The API server rejects:
 - both or neither of `schedule.cron` / `schedule.every`; `every` not matching `^[1-9][0-9]*(d|h)$`;
 - both or neither of `masterCredentials.vault` / `masterCredentials.secretRef`;
 - `window.duration` ≤ 0 or > 24h; `window.start` not `HH:MM`; `minRemaining` < 0 or ≥ `duration`;
-- `database.clickhouse` unless `engine: clickhouse`; `target.mysqlHost` unless `engine: mysql`;
+- `database.clickhouse` unless `engine: clickhouse`; `database.redis` unless `engine: redis`;
+  `target.mysqlHost` unless `engine: mysql`; an unknown `database.redis.persistence`;
 - `tls.mode` `verify-ca`/`verify-full` without `caSecretRef`;
 - `secretSync.externalSecret`/`vaultStaticSecret` missing for, or set without, the matching `type`;
 - a restart target with both or neither of `name` / `selector`;
@@ -1238,6 +1346,7 @@ password — either restored, or never changed. The message is *"Rolled back to 
 | `uses the ed25519 plugin` (MariaDB) | Only `mysql_native_password` accounts can be rotated. | Change the account's plugin, or rotate it another way. |
 | `read authentication plugin` (MariaDB) | The master user cannot read `mysql.user`. | `GRANT SELECT ON mysql.user TO …`. |
 | `alter user "x": … storage is readonly` (ClickHouse) | The user is defined in `users.xml`. | Recreate it with SQL. |
+| `acl setuser "x": NOPERM …` / `acl save: NOPERM …` (Redis) | The rotator lacks the template's commands. | See [6.2](#62-master-user-privileges). |
 | `alter user "x": … Not enough privileges` (ClickHouse) | Missing `ALTER USER` (or `CLUSTER` for `ON CLUSTER`). | See [6.2](#62-master-user-privileges). |
 | `Logging in with the new password: …` | The password changed but the user cannot log in with it: an authentication method that does not support SCRAM, or a connection pooler with its own password list (PgBouncer `auth_file`). | Fix authentication; the old password was restored. |
 | `Writing the new password to Vault: … permission denied` | The target `VaultConnection` lacks `create`/`update` on the target path. | Fix the policy ([5.2](#52-policy)); the old password was restored. |
@@ -1352,7 +1461,7 @@ test/chart/            chart consistency check
 
 ```sh
 make test              # unit tests and envtest (no Docker)
-make test-integration  # + real Vault, PostgreSQL, MySQL, MariaDB, ClickHouse in Docker (testcontainers)
+make test-integration  # + real Vault, PostgreSQL, MySQL, MariaDB, ClickHouse, Redis, Valkey in Docker (testcontainers)
 make test-e2e          # Kind: Helm install, Vault Kubernetes auth, rotations with restarts, ESO, VSO, metrics
 make lint
 make dev-up / dev-down # local environment (section 3)
@@ -1385,9 +1494,13 @@ from the commits. Tags with a hyphen (`v0.2.0-rc.1`) become pre-releases and do 
 ### Adding an engine
 
 Implement `engine.Engine` (`SetPassword`, `VerifyLogin`) in `internal/engine/<name>/`; it must
-never put the password in errors and should keep it out of server logs. Add the engine to the
-`Engine` enum in `api/v1alpha1`, register it in `cmd/main.go`, add integration tests that check
-the server's logs, then `make manifests helm-chart`.
+never put the password in errors and should keep it out of server logs. When some settings can
+only be checked against the server, also implement `engine.Preflighter`: it runs before anything
+changes, and an error stops the rotation. Add the engine to the `Engine` enum in
+`api/v1alpha1`, register it in `cmd/main.go`, and add integration tests that check the server's
+logs. Add a least-privilege template to `docs/least-privilege/`, a test that rotates with a user
+created from it, and the template to [6.2](#62-master-user-privileges) (a test checks the README
+holds every template verbatim). Then `make manifests helm-chart`.
 
 ---
 
@@ -1400,9 +1513,9 @@ has two parts: what it can rotate, and where it can keep the result.
 
 | Status | Target | Notes |
 |---|---|---|
-| Supported | PostgreSQL, MySQL, MariaDB, ClickHouse | See [Database setup](#6-database-setup). |
-| Planned | **NATS** | Rotate NATS user credentials. |
-| Planned | **Redis** | Rotate Redis ACL user passwords. |
+| Supported | PostgreSQL, MySQL, MariaDB, ClickHouse, Redis, Valkey | See [Database setup](#6-database-setup). |
+| Planned | **NATS** | Rotate the credentials (`.creds` files) of NATS users in JWT/NKey (operator) mode. |
+| Planned | **Redis Cluster** | Discover the cluster's nodes and change the password on each. |
 
 ### 20.2 Secret sources
 

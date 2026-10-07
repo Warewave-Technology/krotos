@@ -110,6 +110,13 @@ var _ = Describe("API validation", func() {
 		Entry("clickhouse settings on postgresql", func(s *krotosv1alpha1.DatabaseCredentialRotationSpec) {
 			s.Database.ClickHouse = &krotosv1alpha1.ClickHouseSettings{Cluster: "c"}
 		}, "only allowed when engine is clickhouse"),
+		Entry("redis settings on postgresql", func(s *krotosv1alpha1.DatabaseCredentialRotationSpec) {
+			s.Database.Redis = &krotosv1alpha1.RedisSettings{Persistence: krotosv1alpha1.RedisPersistenceNone}
+		}, "only allowed when engine is redis"),
+		Entry("unknown redis persistence", func(s *krotosv1alpha1.DatabaseCredentialRotationSpec) {
+			s.Engine = krotosv1alpha1.EngineRedis
+			s.Database.Redis = &krotosv1alpha1.RedisSettings{Persistence: "Sometimes"}
+		}, "spec.database.redis.persistence"),
 		Entry("mysqlHost on postgresql", func(s *krotosv1alpha1.DatabaseCredentialRotationSpec) {
 			s.Target.MySQLHost = new("%")
 		}, "only allowed when engine is mysql"),

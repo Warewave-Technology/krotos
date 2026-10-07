@@ -290,8 +290,9 @@ type Engine interface {
 | M6 ✅ | MySQL/MariaDB ve ClickHouse engine'leri |
 | M7 ✅ | Metrikler, Event'ler, Helm chart, e2e (kind + testcontainers) |
 | M8 ✅ | ESO/VSO sync adımı (`secretSync`) |
-| M9 | NATS: kullanıcı credential rotation'ı |
-| M10 | Redis: ACL kullanıcı parolası rotation'ı |
+| M9 ✅ | Redis/Valkey: ACL kullanıcı parolası rotation'ı (`ACL SETUSER resetpass #sha256`, persistence `Auto`/`ACLFile`/`ConfigRewrite`/`None`, replica'lar için `nodes`); her engine için least-privilege template'leri (`docs/least-privilege/`) |
+| M10 | NATS: JWT/NKey (operator) modunda kullanıcı `.creds` rotation'ı |
+| M11 | Redis Cluster |
 
 ### Secret source yol haritası
 

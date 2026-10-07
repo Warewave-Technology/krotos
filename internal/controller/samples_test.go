@@ -83,7 +83,7 @@ var _ = Describe("Samples", func() {
 			kinds[u.GetKind()]++
 		}
 		Expect(kinds).To(HaveKeyWithValue("VaultConnection", 2))
-		Expect(kinds).To(HaveKeyWithValue("DatabaseCredentialRotation", 3))
+		Expect(kinds).To(HaveKeyWithValue("DatabaseCredentialRotation", 4))
 
 		var list krotosv1alpha1.DatabaseCredentialRotationList
 		Expect(k8sClient.List(ctx, &list, client.InNamespace(samplesNS))).To(Succeed())
@@ -95,7 +95,7 @@ var _ = Describe("Samples", func() {
 				Expect(r.Spec.PasswordPolicy.ExcludeCharacters).To(Equal(krotosv1alpha1.DefaultExcludeCharacters))
 			}
 		}
-		Expect(engines).To(HaveLen(3), "one sample per engine")
+		Expect(engines).To(HaveLen(4), "one sample per engine")
 	})
 
 	It("cover every secretSync type", func() {
@@ -106,7 +106,12 @@ var _ = Describe("Samples", func() {
 			}
 			var r krotosv1alpha1.DatabaseCredentialRotation
 			Expect(runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &r)).To(Succeed())
-			types[string(r.Spec.SecretSync.Type)] = true
+			syncType := r.Spec.SecretSync.Type
+			if syncType == "" {
+				// Left out in the YAML; the API server defaults it.
+				syncType = krotosv1alpha1.SecretSyncNone
+			}
+			types[string(syncType)] = true
 		}
 		Expect(types).To(Equal(map[string]bool{"None": true, "ExternalSecret": true, "VaultStaticSecret": true}))
 	})

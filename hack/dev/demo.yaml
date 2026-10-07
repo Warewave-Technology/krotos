@@ -1,4 +1,4 @@
-# Demo applications and rotations in team-a, one per engine and secret sync type.
+# Demo applications and rotations in team-a, one per engine.
 apiVersion: krotos.warewave.io/v1alpha1
 kind: VaultConnection
 metadata:
@@ -149,3 +149,53 @@ spec:
     timeout: 3m
   restartTargets:
   - {kind: Deployment, name: analytics-api}
+---
+# sessions: Redis primary + replica; the master user is the least-privilege rotator
+# from docs/least-privilege/redis.acl. External Secrets Operator writes sessions-redis.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sessions-api
+  namespace: team-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: sessions-api}
+  template:
+    metadata:
+      labels: {app: sessions-api}
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: app
+        image: busybox:1.37
+        command: ["sh", "-c", "echo started $(date); sleep 1000000"]
+        envFrom: [{secretRef: {name: sessions-redis}}]
+---
+apiVersion: krotos.warewave.io/v1alpha1
+kind: DatabaseCredentialRotation
+metadata:
+  name: sessions
+  namespace: team-a
+spec:
+  engine: redis
+  database:
+    host: redis-primary.krotos-deps.svc
+    port: 6379
+    tls: {mode: disable}
+    redis:
+      persistence: Auto
+      nodes: [redis-replica.krotos-deps.svc:6379]
+  masterCredentials:
+    vault: {connectionRef: main-vault, path: db/redis/rotator}
+  target:
+    username: sessions_app
+    vault: {connectionRef: main-vault, path: apps/sessions/redis}
+  schedule: {every: 7d}
+  window: {timezone: UTC, start: "00:00", duration: 24h}
+  secretSync:
+    type: ExternalSecret
+    externalSecret: {name: sessions-redis, secretName: sessions-redis}
+    timeout: 3m
+  restartTargets:
+  - {kind: Deployment, name: sessions-api}

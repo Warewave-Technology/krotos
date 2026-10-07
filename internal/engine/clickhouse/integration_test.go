@@ -32,6 +32,7 @@ import (
 
 	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
 	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/engine/enginetest"
 )
 
 var (
@@ -180,5 +181,27 @@ func TestPasswordNotLogged(t *testing.T) {
 	}
 	if alters == 0 {
 		t.Fatal("ALTER USER not in query_log; the check would be meaningless")
+	}
+}
+
+// The README's least-privilege template must be enough to rotate.
+func TestLeastPrivilegeTemplate(t *testing.T) {
+	ctx := t.Context()
+	exec(t, "CREATE USER lp_app IDENTIFIED WITH sha256_password BY 'old-password'")
+	exec(t, "GRANT SELECT ON orders.* TO lp_app")
+	stmts, err := enginetest.SQLStatements("clickhouse.sql", "lp_app", "rotator-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range stmts {
+		exec(t, s)
+	}
+	rotator := engine.Credentials{Username: enginetest.RotatorUser, Password: "rotator-password"}
+	e := Engine{}
+	if err := e.SetPassword(ctx, native, rotator, engine.Account{Username: "lp_app"}, "Rotated-By-Least-Privilege-1"); err != nil {
+		t.Fatalf("rotate with the template's user: %v", err)
+	}
+	if err := e.VerifyLogin(ctx, native, engine.Credentials{Username: "lp_app", Password: "Rotated-By-Least-Privilege-1"}); err != nil {
+		t.Fatalf("login with new password: %v", err)
 	}
 }

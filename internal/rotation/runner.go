@@ -162,6 +162,11 @@ func start(ctx context.Context, t *Target, st *State, persist Persist) *Result {
 	if err := t.Engine.VerifyLogin(ctx, t.Endpoint, creds(t, oldPassword)); err != nil {
 		return failed("The current password in Vault does not work for %q, not rotating: %v", t.Account.Username, err)
 	}
+	if pf, ok := t.Engine.(engine.Preflighter); ok {
+		if err := pf.Preflight(ctx, t.Endpoint, t.Master); err != nil {
+			return failed("Not rotating: %v", err)
+		}
+	}
 
 	newPassword, err := t.NewPassword()
 	if err != nil {

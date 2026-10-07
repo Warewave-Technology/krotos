@@ -31,6 +31,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/engine/enginetest"
 )
 
 const (
@@ -167,5 +168,38 @@ func TestPasswordNotLogged(t *testing.T) {
 	}
 	if strings.Contains(string(logs), secret) {
 		t.Fatal("server log contains the plain password")
+	}
+}
+
+// The README's least-privilege template must be enough to rotate.
+func TestLeastPrivilegeTemplate(t *testing.T) {
+	ctx := t.Context()
+	createRole(t, "lp_app", "old-password")
+	stmts, err := enginetest.SQLStatements("postgresql.sql", "lp_app", "rotator-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := connect(ctx, endpoint, master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeConn(conn)
+	for _, s := range stmts {
+		if _, err := conn.Exec(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+
+	rotator := engine.Credentials{Username: enginetest.RotatorUser, Password: "rotator-password"}
+	e := Engine{}
+	if err := e.SetPassword(ctx, endpoint, rotator, engine.Account{Username: "lp_app"}, "Rotated-By-Least-Privilege-1"); err != nil {
+		t.Fatalf("rotate with the template's user: %v", err)
+	}
+	if err := e.VerifyLogin(ctx, endpoint, engine.Credentials{Username: "lp_app", Password: "Rotated-By-Least-Privilege-1"}); err != nil {
+		t.Fatalf("login with new password: %v", err)
+	}
+	// The rotator may not touch roles it was not granted.
+	if err := e.SetPassword(ctx, endpoint, rotator, engine.Account{Username: masterUser}, "Not-Allowed-1"); err == nil {
+		t.Fatal("rotator changed the master's password")
 	}
 }

@@ -44,6 +44,8 @@ var _ engine.Engine = Engine{}
 // slow and binary logs. MariaDB does not, so for MariaDB the password is sent as
 // a mysql_native_password hash instead.
 func (Engine) SetPassword(ctx context.Context, ep engine.Endpoint, master engine.Credentials, account engine.Account, password string) error {
+	// The master user needs no privilege on the application's database.
+	ep.Database = ""
 	db, err := open(ep, master)
 	if err != nil {
 		return err

@@ -67,3 +67,15 @@ spec:
   path: apps/analytics/db
   refreshAfter: 1h
   destination: {name: analytics-db, create: true}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: sessions-redis
+  namespace: team-a
+spec:
+  refreshInterval: 1h
+  secretStoreRef: {kind: SecretStore, name: vault}
+  target: {name: sessions-redis}
+  dataFrom:
+  - extract: {key: apps/sessions/redis}

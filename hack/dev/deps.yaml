@@ -1,4 +1,4 @@
-# Development dependencies: Vault (dev mode) and one server per supported engine.
+# Development dependencies: Vault (dev mode) and servers for every supported engine.
 # Credentials here are throwaway values for a local Kind cluster only.
 apiVersion: v1
 kind: Namespace
@@ -157,3 +157,79 @@ spec:
   ports:
   - {name: native, port: 9000}
   - {name: http, port: 8123}
+---
+# Redis primary and replica. Both keep their users in an aclfile, so krotos persists
+# changes with ACL SAVE (persistence Auto). ACL changes are not replicated: the
+# rotation lists the replica in database.redis.nodes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-primary
+  namespace: krotos-deps
+spec:
+  selector:
+    matchLabels: {app: redis-primary}
+  template:
+    metadata:
+      labels: {app: redis-primary}
+    spec:
+      containers:
+      - name: redis
+        image: redis:8.2-alpine
+        command:
+        - sh
+        - -c
+        - |
+          [ -f /data/users.acl ] || echo 'user default on >redis-admin-pw ~* &* +@all' > /data/users.acl
+          exec redis-server --aclfile /data/users.acl
+        ports: [{containerPort: 6379}]
+        readinessProbe:
+          exec: {command: ["redis-cli", "--no-auth-warning", "-a", "redis-admin-pw", "ping"]}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-primary
+  namespace: krotos-deps
+spec:
+  selector: {app: redis-primary}
+  ports: [{port: 6379}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-replica
+  namespace: krotos-deps
+spec:
+  selector:
+    matchLabels: {app: redis-replica}
+  template:
+    metadata:
+      labels: {app: redis-replica}
+    spec:
+      containers:
+      - name: redis
+        image: redis:8.2-alpine
+        command:
+        - sh
+        - -c
+        - |
+          [ -f /data/users.acl ] || echo 'user default on >redis-admin-pw ~* &* +@all' > /data/users.acl
+          exec redis-server --aclfile /data/users.acl \
+            --replicaof redis-primary.krotos-deps.svc 6379 --masteruser default --masterauth redis-admin-pw
+        ports: [{containerPort: 6379}]
+        readinessProbe:
+          exec: {command: ["redis-cli", "--no-auth-warning", "-a", "redis-admin-pw", "ping"]}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-replica
+  namespace: krotos-deps
+spec:
+  selector: {app: redis-replica}
+  ports: [{port: 6379}]

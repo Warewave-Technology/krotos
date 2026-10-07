@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Creates (or updates) a local Kind cluster "krotos-dev" with Vault, PostgreSQL,
-# MySQL, ClickHouse, External Secrets Operator, Vault Secrets Operator, the krotos
-# operator and three demo rotations in the namespace team-a.
+# MySQL, ClickHouse, Redis (primary + replica), External Secrets Operator, Vault
+# Secrets Operator, the krotos operator and four demo rotations in the namespace team-a.
 #
 # The cluster's kubeconfig is written to bin/krotos-dev.kubeconfig; the current
 # kubectl context is never changed. Safe to run again: existing users and Vault
@@ -37,9 +37,9 @@ step "Building and loading the operator image $IMG_REPO:$IMG_TAG"
 make -C "$ROOT" docker-build IMG="$IMG_REPO:$IMG_TAG" >/dev/null
 "$KIND" load docker-image "$IMG_REPO:$IMG_TAG" --name "$CLUSTER"
 
-step "Vault, PostgreSQL, MySQL, ClickHouse"
+step "Vault, PostgreSQL, MySQL, ClickHouse, Redis"
 kubectl apply -f "$DIR/deps.yaml"
-for d in vault postgres mysql clickhouse; do
+for d in vault postgres mysql clickhouse redis-primary redis-replica; do
   kubectl rollout status "deploy/$d" -n "$DEPS" --timeout=5m
 done
 
@@ -56,6 +56,16 @@ GRANT SELECT ON billing.* TO 'billing_app'@'%';" 2>&1 | grep -v "Using a passwor
 kubectl exec -n "$DEPS" deploy/clickhouse -- clickhouse-client --user admin --password clickhouse-admin-pw --multiquery --query "
 CREATE USER IF NOT EXISTS analytics_reader IDENTIFIED WITH sha256_password BY 'analytics-initial-pw';
 GRANT SELECT ON analytics.* TO analytics_reader;"
+# ACL users are per server: create them on both, the rotator from the README template.
+for d in redis-primary redis-replica; do
+  rcli() { kubectl exec -n "$DEPS" "deploy/$d" -- redis-cli --no-auth-warning -a redis-admin-pw "$@"; }
+  if [ "$(rcli ACL GETUSER sessions_app | head -1)" = "" ]; then
+    rcli ACL SETUSER sessions_app on '>sessions-initial-pw' '~session:*' +@read +@write +ping >/dev/null
+  fi
+  grep -v '^#' "$ROOT/docs/least-privilege/redis.acl" | sed 's/change-me/redis-rotator-pw/' |
+    kubectl exec -i -n "$DEPS" "deploy/$d" -- redis-cli --no-auth-warning -a redis-admin-pw >/dev/null
+  rcli ACL SAVE >/dev/null
+done
 
 step "Vault: Kubernetes auth, policies, secrets"
 vault() { kubectl exec -i -n "$DEPS" deploy/vault -- vault "$@"; }
@@ -84,9 +94,11 @@ put_once() {
 put_once secret/db/postgres/master   username=postgres password=postgres-master-pw
 put_once secret/db/mysql/master      username=root     password=mysql-root-pw
 put_once secret/db/clickhouse/master username=admin    password=clickhouse-admin-pw
+put_once secret/db/redis/rotator     username=krotos_rotator password=redis-rotator-pw
 put_once secret/apps/orders/db    username=orders_app       password=orders-initial-pw    host=postgres.$DEPS.svc
 put_once secret/apps/billing/db   username=billing_app      password=billing-initial-pw   host=mysql.$DEPS.svc
 put_once secret/apps/analytics/db username=analytics_reader password=analytics-initial-pw host=clickhouse.$DEPS.svc
+put_once secret/apps/sessions/redis username=sessions_app password=sessions-initial-pw host=redis-primary.$DEPS.svc
 
 step "External Secrets Operator and Vault Secrets Operator"
 helm upgrade --install external-secrets external-secrets --repo https://charts.external-secrets.io \
@@ -100,7 +112,7 @@ for i in $(seq 1 30); do
   [ "$i" = 30 ] && kubectl apply -f "$DIR/sync.yaml"
   sleep 5
 done
-for s in billing-db analytics-db; do
+for s in billing-db analytics-db sessions-redis; do
   until kubectl get secret "$s" -n "$NS" >/dev/null 2>&1; do sleep 2; done
 done
 
@@ -128,6 +140,9 @@ Trigger a rotation now:
 
 Read a password from Vault:
   kubectl exec -n $DEPS deploy/vault -- vault kv get secret/apps/orders/db
+
+Rotate the Redis user (primary and replica):
+  kubectl annotate dcr sessions -n $NS krotos.warewave.io/rotate-now=true krotos.warewave.io/ignore-window=true
 
 After changing the code:  make dev-up    (rebuilds and upgrades the operator)
 Remove everything:        make dev-down

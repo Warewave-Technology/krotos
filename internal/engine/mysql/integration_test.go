@@ -33,6 +33,7 @@ import (
 
 	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
 	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/engine/enginetest"
 )
 
 const rootPassword = "root-password"
@@ -155,6 +156,8 @@ func TestMySQLAndMariaDB(t *testing.T) {
 				})
 			}
 
+			t.Run("least-privilege template", func(t *testing.T) { testLeastPrivilege(t, srv, db) })
+
 			t.Run("errors", func(t *testing.T) {
 				err := e.SetPassword(ctx, ep, master, engine.Account{Username: "nobody", MySQLHost: "%"}, "Some-Password-123")
 				if err == nil {
@@ -225,5 +228,52 @@ func TestMySQLAndMariaDB(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// testLeastPrivilege rotates with a user created from the README's template.
+func testLeastPrivilege(t *testing.T, srv server, db *sql.DB) {
+	ctx := t.Context()
+	e := Engine{}
+	ep := srv.endpoint
+
+	tpl := "mysql.sql"
+	if strings.HasPrefix(srv.name, "mariadb") {
+		tpl = "mariadb.sql"
+	}
+	exec(t, db, "CREATE USER 'lp_app'@'%' IDENTIFIED BY 'old-password'")
+	exec(t, db, "GRANT SELECT ON orders.* TO 'lp_app'@'%'")
+	stmts, err := enginetest.SQLStatements(tpl, "lp_app", "rotator-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range stmts {
+		exec(t, db, s)
+	}
+	rotator := engine.Credentials{Username: enginetest.RotatorUser, Password: "rotator-password"}
+	if err := e.SetPassword(ctx, ep, rotator, engine.Account{Username: "lp_app", MySQLHost: "%"}, "Rotated-By-Least-Privilege-1"); err != nil {
+		t.Fatalf("rotate with the template's user: %v", err)
+	}
+	if err := e.VerifyLogin(ctx, ep, engine.Credentials{Username: "lp_app", Password: "Rotated-By-Least-Privilege-1"}); err != nil {
+		t.Fatalf("login with new password: %v", err)
+	}
+
+	rdb, err := open(engine.Endpoint{Host: ep.Host, Port: ep.Port, TLSMode: ep.TLSMode}, rotator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rdb.Close() }()
+	var hash string
+	err = rdb.QueryRowContext(ctx, "SELECT authentication_string FROM mysql.user LIMIT 1").Scan(&hash)
+	if err == nil {
+		t.Fatal("the template's user can read password hashes")
+	}
+	if strings.HasPrefix(srv.name, "mysql") {
+		// root holds SYSTEM_USER, which an account without it cannot modify.
+		err := e.SetPassword(ctx, ep, rotator, engine.Account{Username: "root", MySQLHost: "%"}, "Not-Allowed-1")
+		if err == nil {
+			t.Fatal("the template's user changed root's password")
+		}
+		t.Logf("changing root as the rotator: %v", err)
 	}
 }

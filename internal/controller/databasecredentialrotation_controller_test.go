@@ -181,6 +181,7 @@ var _ = Describe("DatabaseCredentialRotation Controller", func() {
 				krotosv1alpha1.EnginePostgreSQL: db,
 				krotosv1alpha1.EngineMySQL:      db,
 				krotosv1alpha1.EngineClickHouse: db,
+				krotosv1alpha1.EngineRedis:      db,
 			},
 			OpenVault: func(context.Context, *krotosv1alpha1.VaultConnection) (rotation.SecretStore, error) {
 				return store, nil
@@ -676,6 +677,30 @@ var _ = Describe("DatabaseCredentialRotation Controller", func() {
 		})
 		reconcileOnce()
 		Expect(db.lastAccount.MySQLHost).To(Equal("10.0.%"))
+	})
+
+	It("passes Redis settings, defaulting persistence to Auto", func() {
+		create(func(o *krotosv1alpha1.DatabaseCredentialRotation) { o.Spec.Engine = krotosv1alpha1.EngineRedis })
+		reconcileOnce()
+		Expect(db.lastEndpoint.RedisPersistence).To(Equal("Auto"))
+
+		db.passwords[appUser] = db.appPassword()
+		other := key.Name + "-nodes"
+		obj := &krotosv1alpha1.DatabaseCredentialRotation{
+			ObjectMeta: metav1.ObjectMeta{Name: other, Namespace: testNamespace},
+			Spec:       validRotationSpec(),
+		}
+		obj.Spec.Engine = krotosv1alpha1.EngineRedis
+		obj.Spec.Database.Redis = &krotosv1alpha1.RedisSettings{
+			Persistence: krotosv1alpha1.RedisPersistenceNone, Nodes: []string{"redis-1:6379"},
+		}
+		obj.Spec.Target.Vault.Path = "apps/orders/db"
+		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, obj) })
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: other}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(db.lastEndpoint.RedisPersistence).To(Equal("None"))
+		Expect(db.lastEndpoint.RedisNodes).To(Equal([]string{"redis-1:6379"}))
 	})
 
 	It("passes ClickHouse settings", func() {

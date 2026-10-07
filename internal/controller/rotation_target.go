@@ -111,6 +111,15 @@ func (r *DatabaseCredentialRotationReconciler) endpoint(
 		ep.ClickHouseCluster = db.ClickHouse.Cluster
 		ep.ClickHouseProtocol = db.ClickHouse.Protocol
 	}
+	if obj.Spec.Engine == krotosv1alpha1.EngineRedis {
+		ep.RedisPersistence = string(krotosv1alpha1.RedisPersistenceAuto)
+		if db.Redis != nil {
+			if db.Redis.Persistence != "" {
+				ep.RedisPersistence = string(db.Redis.Persistence)
+			}
+			ep.RedisNodes = db.Redis.Nodes
+		}
+	}
 	return ep, nil
 }
 

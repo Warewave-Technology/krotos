@@ -43,6 +43,10 @@ type Endpoint struct {
 	ClickHouseCluster string
 	// ClickHouseProtocol is "native" or "http".
 	ClickHouseProtocol string
+	// RedisPersistence is how Redis keeps a changed password across restarts.
+	RedisPersistence string
+	// RedisNodes are further Redis servers ("host:port") to change the password on.
+	RedisNodes []string
 }
 
 // Credentials is a username and password. Its String method hides the password.
@@ -72,6 +76,12 @@ type Engine interface {
 	SetPassword(ctx context.Context, ep Endpoint, master Credentials, account Account, password string) error
 	// VerifyLogin connects as creds and runs a trivial query.
 	VerifyLogin(ctx context.Context, ep Endpoint, creds Credentials) error
+}
+
+// Preflighter is implemented by engines that can tell, before anything is changed,
+// that a rotation would not work (e.g. Redis without a way to persist the change).
+type Preflighter interface {
+	Preflight(ctx context.Context, ep Endpoint, master Credentials) error
 }
 
 // TLSConfig builds the client TLS configuration for ep. It returns nil when TLS is disabled.

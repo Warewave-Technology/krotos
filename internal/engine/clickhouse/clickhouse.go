@@ -47,6 +47,8 @@ func (Engine) SetPassword(ctx context.Context, ep engine.Endpoint, master engine
 	if err != nil {
 		return err
 	}
+	// The master user needs no privilege on the application's database.
+	ep.Database = ""
 	conn, err := connect(ep, master)
 	if err != nil {
 		return err

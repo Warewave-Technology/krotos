@@ -4,4 +4,5 @@ resources:
 - krotos_v1alpha1_databasecredentialrotation_postgresql.yaml
 - krotos_v1alpha1_databasecredentialrotation_mysql.yaml
 - krotos_v1alpha1_databasecredentialrotation_clickhouse.yaml
+- krotos_v1alpha1_databasecredentialrotation_redis.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

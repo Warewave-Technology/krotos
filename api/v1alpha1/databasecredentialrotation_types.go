@@ -22,18 +22,21 @@ import (
 )
 
 // Engine is a supported database engine.
-// +kubebuilder:validation:Enum=postgresql;mysql;clickhouse
+// +kubebuilder:validation:Enum=postgresql;mysql;clickhouse;redis
 type Engine string
 
 const (
 	EnginePostgreSQL Engine = "postgresql"
 	EngineMySQL      Engine = "mysql"
 	EngineClickHouse Engine = "clickhouse"
+	// EngineRedis covers Redis 6+ and Valkey (ACL users).
+	EngineRedis Engine = "redis"
 )
 
 // DatabaseCredentialRotationSpec defines the desired state of DatabaseCredentialRotation.
 // +kubebuilder:validation:XValidation:rule="!has(self.database.clickhouse) || self.engine == 'clickhouse'",message="database.clickhouse is only allowed when engine is clickhouse"
 // +kubebuilder:validation:XValidation:rule="!has(self.target.mysqlHost) || self.engine == 'mysql'",message="target.mysqlHost is only allowed when engine is mysql"
+// +kubebuilder:validation:XValidation:rule="!has(self.database.redis) || self.engine == 'redis'",message="database.redis is only allowed when engine is redis"
 type DatabaseCredentialRotationSpec struct {
 	// engine of the target database.
 	// +required
@@ -112,6 +115,10 @@ type DatabaseEndpoint struct {
 	// clickhouse holds ClickHouse specific settings.
 	// +optional
 	ClickHouse *ClickHouseSettings `json:"clickhouse,omitempty"`
+
+	// redis holds Redis / Valkey specific settings.
+	// +optional
+	Redis *RedisSettings `json:"redis,omitempty"`
 }
 
 // TLSMode selects how TLS is used towards the database.
@@ -149,6 +156,40 @@ type ClickHouseSettings struct {
 	// +kubebuilder:default=native
 	// +optional
 	Protocol string `json:"protocol,omitempty"`
+}
+
+// RedisPersistence selects how a changed ACL password is made to survive a Redis restart.
+// +kubebuilder:validation:Enum=Auto;ACLFile;ConfigRewrite;None
+type RedisPersistence string
+
+const (
+	// RedisPersistenceAuto uses ACL SAVE when the server has an aclfile and refuses
+	// to rotate otherwise.
+	RedisPersistenceAuto RedisPersistence = "Auto"
+	// RedisPersistenceACLFile runs ACL SAVE.
+	RedisPersistenceACLFile RedisPersistence = "ACLFile"
+	// RedisPersistenceConfigRewrite runs CONFIG REWRITE, which rewrites the whole
+	// config file, including runtime CONFIG SET changes and command-line arguments.
+	RedisPersistenceConfigRewrite RedisPersistence = "ConfigRewrite"
+	// RedisPersistenceNone keeps the change in memory only; a restarted server
+	// comes back with the old password.
+	RedisPersistenceNone RedisPersistence = "None"
+)
+
+// RedisSettings holds Redis / Valkey specific settings.
+type RedisSettings struct {
+	// persistence selects how the new password survives a server restart.
+	// +kubebuilder:default=Auto
+	// +optional
+	Persistence RedisPersistence `json:"persistence,omitempty"`
+
+	// nodes are further servers ("host:port") that get the same change, such as
+	// replicas: ACL changes are not replicated. The password is changed and
+	// verified on database.host and on every node listed here.
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=set
+	// +optional
+	Nodes []string `json:"nodes,omitempty"`
 }
 
 // MasterCredentials locates the privileged credentials. Exactly one source must be set.

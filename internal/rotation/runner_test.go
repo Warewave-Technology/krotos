@@ -244,6 +244,30 @@ func TestRunRefusesToStart(t *testing.T) {
 	}
 }
 
+// preflightDB refuses every rotation in its preflight.
+type preflightDB struct{ *fakeDB }
+
+func (preflightDB) Preflight(context.Context, engine.Endpoint, engine.Credentials) error {
+	return errors.New("server has no aclfile")
+}
+
+func TestRunPreflightRefusalChangesNothing(t *testing.T) {
+	f := newFixture()
+	f.target.Engine = preflightDB{f.db}
+
+	res := f.run(t)
+	if res.Outcome != OutcomeFailed || res.RolledBack {
+		t.Fatalf("outcome = %s rolledBack=%v (%s)", res.Outcome, res.RolledBack, res.Message)
+	}
+	if !strings.Contains(res.Message, "no aclfile") {
+		t.Errorf("message = %q", res.Message)
+	}
+	f.assertConsistent(t, oldPassword)
+	if f.pending.p != nil || len(f.persisted) != 0 {
+		t.Errorf("state was touched: pending=%v persisted=%v", f.pending.p, f.persisted)
+	}
+}
+
 func TestRunRetriesTransientDatabaseError(t *testing.T) {
 	f := newFixture()
 	f.db.setFailures = 1
