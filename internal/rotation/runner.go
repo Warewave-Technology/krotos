@@ -239,9 +239,16 @@ func rollback(ctx context.Context, t *Target, st *State, persist Persist) *Resul
 		return res
 	}
 
-	err := t.Engine.SetPassword(ctx, t.Endpoint, t.Master, t.Account, p.OldPassword)
-	if err == nil {
-		err = t.Engine.VerifyLogin(ctx, t.Endpoint, creds(t, p.OldPassword))
+	// A rollback is done when the old password works. If it still does, the database was
+	// never changed (every engine's ALTER replaces the password), so there is nothing to
+	// undo; this also keeps a permanent ALTER error (e.g. a missing privilege) from
+	// failing the rollback forever.
+	err := t.Engine.VerifyLogin(ctx, t.Endpoint, creds(t, p.OldPassword))
+	if err != nil {
+		err = t.Engine.SetPassword(ctx, t.Endpoint, t.Master, t.Account, p.OldPassword)
+		if err == nil {
+			err = t.Engine.VerifyLogin(ctx, t.Endpoint, creds(t, p.OldPassword))
+		}
 	}
 	if err != nil {
 		st.Retries++
@@ -312,8 +319,9 @@ func loadPending(ctx context.Context, t *Target) (*Pending, *Result) {
 		return nil, &Result{
 			Outcome:      OutcomeStuck,
 			RequeueAfter: maxBackoff,
-			Message: "The pending password Secret is missing while a rotation is in progress; the database " +
-				"password may no longer match Vault. Reset the password manually, then clear status.step.",
+			Message: "The pending passwords are missing from Vault while a rotation is in progress; the " +
+				"database password may no longer match Vault. Set the password manually so that the " +
+				"database and Vault agree, then clear status.step (see README, Troubleshooting).",
 		}
 	}
 	return p, nil

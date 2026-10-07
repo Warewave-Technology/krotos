@@ -376,6 +376,28 @@ func TestRunConcurrentVaultWriterIsMerged(t *testing.T) {
 	}
 }
 
+func TestRunPermanentDatabaseErrorRollsBackWithoutChanges(t *testing.T) {
+	// E.g. the master user lacks the privilege: every ALTER fails, including the rollback's.
+	f := newFixture()
+	f.db.setFailures = -1
+
+	var res Result
+	for range maxDBRetries {
+		res = f.run(t)
+	}
+	if res.Outcome != OutcomeFailed || !res.RolledBack {
+		t.Fatalf("outcome = %s rolledBack=%v (%s); a database that was never changed must not be stuck",
+			res.Outcome, res.RolledBack, res.Message)
+	}
+	if !strings.Contains(res.Message, "connection refused") {
+		t.Errorf("message %q does not carry the original error", res.Message)
+	}
+	f.assertConsistent(t, oldPassword)
+	if f.pending.p != nil || f.state != (State{}) {
+		t.Errorf("not cleaned up: pending=%v state=%+v", f.pending.p, f.state)
+	}
+}
+
 func TestRunRollbackFailureIsStuckUntilItSucceeds(t *testing.T) {
 	f := newFixture()
 	f.db.verifyFailures = -1
