@@ -290,6 +290,8 @@ type Engine interface {
 | M6 ✅ | MySQL/MariaDB ve ClickHouse engine'leri |
 | M7 ✅ | Metrikler, Event'ler, Helm chart, e2e (kind + testcontainers) |
 | M8 ✅ | ESO/VSO sync adımı (`secretSync`) |
+| M9 | NATS: kullanıcı credential rotation'ı |
+| M10 | Redis: ACL kullanıcı parolası rotation'ı |
 
 ## 12. Kararlar
 
