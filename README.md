@@ -1393,10 +1393,33 @@ the server's logs, then `make manifests helm-chart`.
 
 ## 20. Roadmap
 
-| Status | Item |
-|---|---|
-| Planned | **NATS** – rotate NATS user credentials. |
-| Planned | **Redis** – rotate Redis ACL user passwords. |
+krotos aims to rotate credentials the same way whichever secret store holds them. The roadmap
+has two parts: what it can rotate, and where it can keep the result.
+
+### 20.1 Rotation targets
+
+| Status | Target | Notes |
+|---|---|---|
+| Supported | PostgreSQL, MySQL, MariaDB, ClickHouse | See [Database setup](#6-database-setup). |
+| Planned | **NATS** | Rotate NATS user credentials. |
+| Planned | **Redis** | Rotate Redis ACL user passwords. |
+
+### 20.2 Secret sources
+
+A source is supported only once it can be tested in CI against a real server or a faithful
+emulator, as HashiCorp Vault is today.
+
+| Status | Source | Notes |
+|---|---|---|
+| Supported | **HashiCorp Vault** | KV v1 and v2; Kubernetes or token authentication. |
+| Planned (first) | **Store-agnostic API** | Replace `VaultConnection` with a store resource that selects the provider, and refer to secrets by store and key. Each provider declares what it supports (check-and-set, versions), and where in-flight passwords go. |
+| Planned | **OpenBao** | Vault-compatible API, so the current client is expected to work; tested with the OpenBao dev server in Docker. |
+| Planned | **AWS Secrets Manager** | JSON secret values; in-flight passwords as the `AWSPENDING` version; IRSA or EKS Pod Identity; tested on LocalStack or a real account. |
+| Planned | **Azure Key Vault** | JSON secret values; no check-and-set, and deleted names stay reserved until purged; Microsoft Entra Workload ID; tested on Lowkey Vault. |
+| Planned | **Google Secret Manager** | JSON secret values; no check-and-set on writes; Workload Identity Federation; tested on a community emulator. |
+| Planned | **CyberArk Conjur** | As a store for accounts CyberArk does not rotate itself; tested on Conjur Open Source. |
+| Planned | **Sync-and-restart mode** | For accounts already rotated by a PAM product (CyberArk CPM, Delinea Secret Server): krotos does not change the password, but detects the change and restarts the workloads safely. Rotating such accounts as well would conflict with the PAM product. |
+| Under consideration | **Delinea Secret Server** | No way to test it in CI yet. |
 
 ---
 

@@ -293,6 +293,22 @@ type Engine interface {
 | M9 | NATS: kullanıcı credential rotation'ı |
 | M10 | Redis: ACL kullanıcı parolası rotation'ı |
 
+### Secret source yol haritası
+
+Bir kaynak, CI'da gerçek bir sunucuya ya da güvenilir bir emülatöre karşı test edilebildiğinde desteklenir sayılır.
+
+| Sıra | Kaynak | Not |
+|---|---|---|
+| ✅ | HashiCorp Vault | KV v1/v2, Kubernetes veya token auth |
+| S1 | Kasadan bağımsız API | `VaultConnection` yerine provider seçen bir store kaynağı; secret'lara store + key ile referans; her provider CAS/versiyon desteğini ve pending parolaların yerini bildirir |
+| S2 | OpenBao | Vault uyumlu API; Docker dev server ile test |
+| S3 | AWS Secrets Manager | JSON değer, pending için `AWSPENDING`; IRSA/Pod Identity; LocalStack veya gerçek hesap |
+| S4 | Azure Key Vault | JSON değer, CAS yok, silinen ad purge'e kadar kilitli; Workload ID; Lowkey Vault |
+| S5 | Google Secret Manager | JSON değer, yazmada CAS yok; Workload Identity Federation; topluluk emülatörü |
+| S6 | CyberArk Conjur | CyberArk'ın kendisinin rotate etmediği hesaplar için; Conjur OSS ile test |
+| S7 | Sync-and-restart modu | CyberArk CPM / Delinea'nın rotate ettiği hesaplar: parolayı değiştirmeden değişikliği algılayıp restart; iki rotator aynı hesapta çakışır |
+| Değerlendirmede | Delinea Secret Server | CI'da test imkânı yok |
+
 ## 12. Kararlar
 
 - API group: `krotos.warewave.io/v1alpha1`.
