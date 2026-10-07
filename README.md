@@ -199,7 +199,14 @@ make test              # unit tests and envtest
 make test-integration  # also against real Vault, PostgreSQL, MySQL, MariaDB, ClickHouse in Docker
 make test-e2e          # Kind cluster: Helm install, Vault Kubernetes auth, full rotation with a restart
 make lint
+make dev-up            # local Kind cluster "krotos-dev" with all dependencies and demo rotations
+make dev-down
 ```
+
+`make dev-up` (see `hack/dev/`) runs Vault, PostgreSQL, MySQL, ClickHouse, External Secrets
+Operator, Vault Secrets Operator and the operator in a Kind cluster, with one demo rotation
+per engine in the namespace `team-a`. Its kubeconfig is `bin/krotos-dev.kubeconfig`; run it
+again after code changes to rebuild and upgrade the operator.
 
 `make test-e2e` keeps the Kind cluster's kubeconfig in `bin/krotos-test-e2e.kubeconfig`, so
 the current kubectl context is never changed, and refuses to run against any other context.

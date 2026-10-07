@@ -1,0 +1,159 @@
+# Development dependencies: Vault (dev mode) and one server per supported engine.
+# Credentials here are throwaway values for a local Kind cluster only.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: krotos-deps
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: krotos-deps
+---
+# Lets Vault review the operator's ServiceAccount tokens (Kubernetes auth).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: krotos-dev-vault-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: vault
+  namespace: krotos-deps
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault
+  namespace: krotos-deps
+spec:
+  selector:
+    matchLabels: {app: vault}
+  template:
+    metadata:
+      labels: {app: vault}
+    spec:
+      serviceAccountName: vault
+      containers:
+      - name: vault
+        image: hashicorp/vault:1.20
+        args: ["server", "-dev", "-dev-root-token-id=root", "-dev-listen-address=0.0.0.0:8200"]
+        env:
+        - {name: VAULT_ADDR, value: "http://127.0.0.1:8200"}
+        - {name: VAULT_TOKEN, value: root}
+        ports: [{containerPort: 8200}]
+        readinessProbe:
+          httpGet: {path: /v1/sys/health, port: 8200}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: krotos-deps
+spec:
+  selector: {app: vault}
+  ports: [{port: 8200}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: krotos-deps
+spec:
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:17-alpine
+        env:
+        - {name: POSTGRES_USER, value: postgres}
+        - {name: POSTGRES_PASSWORD, value: postgres-master-pw}
+        - {name: POSTGRES_DB, value: orders}
+        ports: [{containerPort: 5432}]
+        readinessProbe:
+          exec: {command: ["pg_isready", "-U", "postgres", "-d", "orders"]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: krotos-deps
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: krotos-deps
+spec:
+  selector:
+    matchLabels: {app: mysql}
+  template:
+    metadata:
+      labels: {app: mysql}
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.4
+        env:
+        - {name: MYSQL_ROOT_PASSWORD, value: mysql-root-pw}
+        - {name: MYSQL_DATABASE, value: billing}
+        ports: [{containerPort: 3306}]
+        readinessProbe:
+          exec: {command: ["mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pmysql-root-pw"]}
+          initialDelaySeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: krotos-deps
+spec:
+  selector: {app: mysql}
+  ports: [{port: 3306}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: krotos-deps
+spec:
+  selector:
+    matchLabels: {app: clickhouse}
+  template:
+    metadata:
+      labels: {app: clickhouse}
+    spec:
+      containers:
+      - name: clickhouse
+        image: clickhouse/clickhouse-server:25.8
+        env:
+        - {name: CLICKHOUSE_USER, value: admin}
+        - {name: CLICKHOUSE_PASSWORD, value: clickhouse-admin-pw}
+        - {name: CLICKHOUSE_DB, value: analytics}
+        # Lets the admin user manage users with SQL; only such users can be rotated.
+        - {name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT, value: "1"}
+        ports: [{containerPort: 9000}, {containerPort: 8123}]
+        readinessProbe:
+          httpGet: {path: /ping, port: 8123}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: krotos-deps
+spec:
+  selector: {app: clickhouse}
+  ports:
+  - {name: native, port: 9000}
+  - {name: http, port: 8123}

@@ -1,0 +1,151 @@
+# Demo applications and rotations in team-a, one per engine and secret sync type.
+apiVersion: krotos.warewave.io/v1alpha1
+kind: VaultConnection
+metadata:
+  name: main-vault
+  namespace: team-a
+spec:
+  address: http://vault.krotos-deps.svc:8200
+  auth:
+    kubernetes:
+      role: krotos
+---
+# orders: PostgreSQL; the application reads Vault directly (Vault Agent / CSI style).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  namespace: team-a
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: orders-api}
+  template:
+    metadata:
+      labels: {app: orders-api}
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: app
+        image: busybox:1.37
+        command: ["sh", "-c", "echo started $(date); sleep 1000000"]
+---
+apiVersion: krotos.warewave.io/v1alpha1
+kind: DatabaseCredentialRotation
+metadata:
+  name: orders
+  namespace: team-a
+spec:
+  engine: postgresql
+  database:
+    host: postgres.krotos-deps.svc
+    port: 5432
+    database: orders
+    tls: {mode: disable}
+  masterCredentials:
+    vault: {connectionRef: main-vault, path: db/postgres/master}
+  target:
+    username: orders_app
+    vault: {connectionRef: main-vault, path: apps/orders/db, usernameKey: username}
+  schedule: {every: 30d}
+  # All day, every day, so manual triggers work any time.
+  window: {timezone: UTC, start: "00:00", duration: 24h}
+  restartTargets:
+  - {kind: Deployment, name: orders-api}
+---
+# billing: MySQL; External Secrets Operator writes the Secret billing-db.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-api
+  namespace: team-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: billing-api}
+  template:
+    metadata:
+      labels: {app: billing-api}
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: app
+        image: busybox:1.37
+        command: ["sh", "-c", "echo started $(date); sleep 1000000"]
+        envFrom: [{secretRef: {name: billing-db}}]
+---
+apiVersion: krotos.warewave.io/v1alpha1
+kind: DatabaseCredentialRotation
+metadata:
+  name: billing
+  namespace: team-a
+spec:
+  engine: mysql
+  database:
+    host: mysql.krotos-deps.svc
+    port: 3306
+    database: billing
+    tls: {mode: require}
+  masterCredentials:
+    vault: {connectionRef: main-vault, path: db/mysql/master}
+  target:
+    username: billing_app
+    mysqlHost: "%"
+    vault: {connectionRef: main-vault, path: apps/billing/db}
+  # Daily at 03:00 UTC; trigger earlier with the rotate-now annotation.
+  schedule: {cron: "0 3 * * *"}
+  window: {timezone: UTC, start: "00:00", duration: 24h}
+  secretSync:
+    type: ExternalSecret
+    externalSecret: {name: billing-db, secretName: billing-db}
+    timeout: 3m
+  restartTargets:
+  - {kind: Deployment, name: billing-api}
+---
+# analytics: ClickHouse; Vault Secrets Operator writes the Secret analytics-db.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-api
+  namespace: team-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: analytics-api}
+  template:
+    metadata:
+      labels: {app: analytics-api}
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: app
+        image: busybox:1.37
+        command: ["sh", "-c", "echo started $(date); sleep 1000000"]
+        envFrom: [{secretRef: {name: analytics-db}}]
+---
+apiVersion: krotos.warewave.io/v1alpha1
+kind: DatabaseCredentialRotation
+metadata:
+  name: analytics
+  namespace: team-a
+spec:
+  engine: clickhouse
+  database:
+    host: clickhouse.krotos-deps.svc
+    port: 9000
+    database: analytics
+    tls: {mode: disable}
+    clickhouse: {protocol: native}
+  masterCredentials:
+    vault: {connectionRef: main-vault, path: db/clickhouse/master}
+  target:
+    username: analytics_reader
+    vault: {connectionRef: main-vault, path: apps/analytics/db}
+  schedule: {every: 7d}
+  window: {timezone: UTC, start: "00:00", duration: 24h}
+  secretSync:
+    type: VaultStaticSecret
+    vaultStaticSecret: {name: analytics-db, secretName: analytics-db}
+    timeout: 3m
+  restartTargets:
+  - {kind: Deployment, name: analytics-api}

@@ -94,6 +94,16 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests against
 cleanup-test-e2e: kind ## Tear down the Kind cluster used for e2e tests
 	@"$(KIND)" delete cluster --name "$(KIND_CLUSTER)" --kubeconfig "$(E2E_KUBECONFIG)"
 
+##@ Local environment
+
+.PHONY: dev-up
+dev-up: kind ## Create or update the krotos-dev Kind cluster with all dependencies and demo rotations.
+	hack/dev/up.sh
+
+.PHONY: dev-down
+dev-down: kind ## Delete the krotos-dev Kind cluster.
+	hack/dev/down.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run

@@ -1,0 +1,69 @@
+# How applications in team-a receive passwords that are not read from Vault directly.
+# External Secrets Operator (billing) authenticates with the dev root token;
+# Vault Secrets Operator (analytics) uses Kubernetes auth.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: eso-vault-token
+  namespace: team-a
+stringData:
+  token: root
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: vault
+  namespace: team-a
+spec:
+  provider:
+    vault:
+      server: http://vault.krotos-deps.svc:8200
+      path: secret
+      version: v2
+      auth:
+        tokenSecretRef: {name: eso-vault-token, key: token}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: billing-db
+  namespace: team-a
+spec:
+  # Long on purpose: a quick update after a rotation shows that krotos triggered it.
+  refreshInterval: 1h
+  secretStoreRef: {kind: SecretStore, name: vault}
+  target: {name: billing-db}
+  dataFrom:
+  - extract: {key: apps/billing/db}
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vso
+  namespace: team-a
+spec:
+  address: http://vault.krotos-deps.svc:8200
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: vso
+  namespace: team-a
+spec:
+  vaultConnectionRef: vso
+  method: kubernetes
+  mount: kubernetes
+  kubernetes: {role: vso, serviceAccount: default}
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: analytics-db
+  namespace: team-a
+spec:
+  vaultAuthRef: vso
+  type: kv-v2
+  mount: secret
+  path: apps/analytics/db
+  refreshAfter: 1h
+  destination: {name: analytics-db, create: true}
