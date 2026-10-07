@@ -32,7 +32,7 @@ import (
 
 	ch "github.com/ClickHouse/clickhouse-go/v2"
 
-	"github.com/warewave/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/engine"
 )
 
 // Engine is the ClickHouse engine.

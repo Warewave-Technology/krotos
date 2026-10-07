@@ -29,10 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
-	"github.com/warewave/krotos/internal/metrics"
-	"github.com/warewave/krotos/internal/vault"
-	"github.com/warewave/krotos/internal/vault/vaulttest"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/metrics"
+	"github.com/Warewave-Technology/krotos/internal/vault"
+	"github.com/Warewave-Technology/krotos/internal/vault/vaulttest"
 )
 
 type staticTokens map[string]string

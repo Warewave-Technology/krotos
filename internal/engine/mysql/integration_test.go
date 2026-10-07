@@ -31,8 +31,8 @@ import (
 	tcmariadb "github.com/testcontainers/testcontainers-go/modules/mariadb"
 	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
-	"github.com/warewave/krotos/internal/engine"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/engine"
 )
 
 const rootPassword = "root-password"

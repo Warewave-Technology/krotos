@@ -38,13 +38,13 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
-	"github.com/warewave/krotos/internal/engine"
-	"github.com/warewave/krotos/internal/metrics"
-	"github.com/warewave/krotos/internal/restart"
-	"github.com/warewave/krotos/internal/rotation"
-	"github.com/warewave/krotos/internal/schedule"
-	"github.com/warewave/krotos/internal/secretsync"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/metrics"
+	"github.com/Warewave-Technology/krotos/internal/restart"
+	"github.com/Warewave-Technology/krotos/internal/rotation"
+	"github.com/Warewave-Technology/krotos/internal/schedule"
+	"github.com/Warewave-Technology/krotos/internal/secretsync"
 )
 
 const (

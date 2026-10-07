@@ -29,7 +29,7 @@ import (
 	vaultapi "github.com/hashicorp/vault/api"
 	tcvault "github.com/testcontainers/testcontainers-go/modules/vault"
 
-	"github.com/warewave/krotos/internal/vault"
+	"github.com/Warewave-Technology/krotos/internal/vault"
 )
 
 const (

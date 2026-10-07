@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/warewave/krotos/internal/vault"
+	"github.com/Warewave-Technology/krotos/internal/vault"
 )
 
 const (

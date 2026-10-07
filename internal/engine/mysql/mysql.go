@@ -30,7 +30,7 @@ import (
 
 	driver "github.com/go-sql-driver/mysql"
 
-	"github.com/warewave/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/engine"
 )
 
 // Engine is the MySQL / MariaDB engine.

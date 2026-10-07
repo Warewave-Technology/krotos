@@ -26,7 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/warewave/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/engine"
 )
 
 // Engine is the PostgreSQL engine.

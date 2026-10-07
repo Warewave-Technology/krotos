@@ -11,7 +11,7 @@ plugins:
     manifests: dist/install.yaml
     output: dist
 projectName: krotos
-repo: github.com/warewave/krotos
+repo: github.com/Warewave-Technology/krotos
 resources:
 - api:
     crdVersion: v1
@@ -20,7 +20,7 @@ resources:
   domain: warewave.io
   group: krotos
   kind: VaultConnection
-  path: github.com/warewave/krotos/api/v1alpha1
+  path: github.com/Warewave-Technology/krotos/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -29,6 +29,6 @@ resources:
   domain: warewave.io
   group: krotos
   kind: DatabaseCredentialRotation
-  path: github.com/warewave/krotos/api/v1alpha1
+  path: github.com/Warewave-Technology/krotos/api/v1alpha1
   version: v1alpha1
 version: "3"

@@ -25,9 +25,9 @@ import (
 	"testing"
 	"time"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
-	"github.com/warewave/krotos/internal/engine"
-	"github.com/warewave/krotos/internal/vault"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/vault"
 )
 
 const (

@@ -30,8 +30,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
-	"github.com/warewave/krotos/internal/engine"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/engine"
 )
 
 var (

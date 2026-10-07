@@ -24,11 +24,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
-	"github.com/warewave/krotos/internal/engine"
-	"github.com/warewave/krotos/internal/password"
-	"github.com/warewave/krotos/internal/rotation"
-	"github.com/warewave/krotos/internal/vault"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/password"
+	"github.com/Warewave-Technology/krotos/internal/rotation"
+	"github.com/Warewave-Technology/krotos/internal/vault"
 )
 
 // VaultStoreFunc opens a Vault secret store for a VaultConnection.

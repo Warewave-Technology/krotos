@@ -37,14 +37,14 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
-	"github.com/warewave/krotos/internal/controller"
-	"github.com/warewave/krotos/internal/engine"
-	"github.com/warewave/krotos/internal/engine/clickhouse"
-	"github.com/warewave/krotos/internal/engine/mysql"
-	"github.com/warewave/krotos/internal/engine/postgres"
-	"github.com/warewave/krotos/internal/rotation"
-	"github.com/warewave/krotos/internal/vault"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/controller"
+	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/engine/clickhouse"
+	"github.com/Warewave-Technology/krotos/internal/engine/mysql"
+	"github.com/Warewave-Technology/krotos/internal/engine/postgres"
+	"github.com/Warewave-Technology/krotos/internal/rotation"
+	"github.com/Warewave-Technology/krotos/internal/vault"
 	// +kubebuilder:scaffold:imports
 )
 

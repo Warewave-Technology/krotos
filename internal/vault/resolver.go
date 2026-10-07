@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
 )
 
 // ConfigError means a VaultConnection cannot be turned into a client configuration,

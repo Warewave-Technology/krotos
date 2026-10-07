@@ -33,11 +33,11 @@ import (
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
-	"github.com/warewave/krotos/internal/engine"
-	"github.com/warewave/krotos/internal/engine/postgres"
-	"github.com/warewave/krotos/internal/rotation"
-	"github.com/warewave/krotos/internal/vault"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/engine/postgres"
+	"github.com/Warewave-Technology/krotos/internal/rotation"
+	"github.com/Warewave-Technology/krotos/internal/vault"
 )
 
 var _ = Describe("Rotation against real Vault and PostgreSQL", Ordered, func() {

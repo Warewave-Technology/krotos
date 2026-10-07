@@ -28,7 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/warewave/krotos/test/utils"
+	"github.com/Warewave-Technology/krotos/test/utils"
 )
 
 const (

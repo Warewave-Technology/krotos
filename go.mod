@@ -1,4 +1,4 @@
-module github.com/warewave/krotos
+module github.com/Warewave-Technology/krotos
 
 go 1.26.0
 

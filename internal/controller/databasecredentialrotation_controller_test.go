@@ -38,12 +38,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
-	"github.com/warewave/krotos/internal/engine"
-	"github.com/warewave/krotos/internal/metrics"
-	"github.com/warewave/krotos/internal/rotation"
-	"github.com/warewave/krotos/internal/secretsync"
-	"github.com/warewave/krotos/internal/vault"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/metrics"
+	"github.com/Warewave-Technology/krotos/internal/rotation"
+	"github.com/Warewave-Technology/krotos/internal/secretsync"
+	"github.com/Warewave-Technology/krotos/internal/vault"
 )
 
 const (

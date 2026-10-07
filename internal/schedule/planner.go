@@ -19,7 +19,7 @@ package schedule
 import (
 	"time"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
 )
 
 // Planner combines a schedule and a change window.

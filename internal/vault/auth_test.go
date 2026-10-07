@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/warewave/krotos/internal/vault"
-	"github.com/warewave/krotos/internal/vault/vaulttest"
+	"github.com/Warewave-Technology/krotos/internal/vault"
+	"github.com/Warewave-Technology/krotos/internal/vault/vaulttest"
 )
 
 type staticTokens map[string]string

@@ -25,7 +25,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
 )
 
 var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)

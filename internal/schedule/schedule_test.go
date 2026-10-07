@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	krotosv1alpha1 "github.com/warewave/krotos/api/v1alpha1"
+	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
 )
 
 const (

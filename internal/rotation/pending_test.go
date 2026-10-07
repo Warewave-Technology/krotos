@@ -22,8 +22,8 @@ import (
 	"maps"
 	"testing"
 
-	"github.com/warewave/krotos/internal/engine"
-	"github.com/warewave/krotos/internal/vault"
+	"github.com/Warewave-Technology/krotos/internal/engine"
+	"github.com/Warewave-Technology/krotos/internal/vault"
 )
 
 // kvStore is a multi-path KV v2 fake that can be switched off.
