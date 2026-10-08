@@ -208,3 +208,22 @@ func TestPlannerDecide(t *testing.T) {
 		})
 	}
 }
+
+func TestPlannerMaxGap(t *testing.T) {
+	from := at(istanbul, 10, 3, 2, 0) // Saturday, window start
+	cases := map[string]struct {
+		sched krotosv1alpha1.Schedule
+		want  time.Duration
+	}{
+		"every 7 days": {krotosv1alpha1.Schedule{Every: "7d"}, 7 * 24 * time.Hour},
+		// Due daily, but only weekends open: Sunday 03:00 to the next Saturday 02:00.
+		"daily cron, weekend window": {krotosv1alpha1.Schedule{Cron: "0 3 * * *"}, 5*24*time.Hour + 23*time.Hour},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := mustPlanner(t, tc.sched).MaxGap(from); got != tc.want {
+				t.Errorf("MaxGap = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

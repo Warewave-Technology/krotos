@@ -76,6 +76,23 @@ func (d Decision) RequeueAfter(now time.Time) time.Duration {
 	return d.NextStart.Sub(now)
 }
 
+// MaxGap is the longest time between the starts of two consecutive rotations,
+// assuming each succeeds at the first possible moment, over the rotations of
+// about the next two years (at most 64) after one at from.
+func (p *Planner) MaxGap(from time.Time) time.Duration {
+	var gap time.Duration
+	last := from
+	for range 64 {
+		next := p.Window.NextStart(p.Schedule.NextDue(last, true))
+		gap = max(gap, next.Sub(last))
+		last = next
+		if last.Sub(from) > 2*365*24*time.Hour {
+			break
+		}
+	}
+	return gap
+}
+
 // Decide evaluates whether a rotation should start now.
 func (p *Planner) Decide(in Input) Decision {
 	var due time.Time

@@ -3,7 +3,8 @@
 **krotos** is a Kubernetes operator that rotates database passwords stored in HashiCorp Vault,
 on a schedule and only inside a change window, and then restarts the workloads that use them.
 
-- **Engines:** PostgreSQL, MySQL, MariaDB, ClickHouse, Redis, Valkey.
+- **Engines:** PostgreSQL, MySQL, MariaDB, ClickHouse, Redis, Valkey, and NATS (`.creds` files of
+  JWT/NKey users).
 - **Vault:** KV v1 and v2, Kubernetes or token authentication.
 - **Delivery to applications:** Vault Agent / CSI (read Vault directly), External Secrets Operator,
   Vault Secrets Operator.
@@ -110,6 +111,7 @@ in `status.step`; the operator continues where it stopped after a crash or upgra
 | MariaDB | 10.4+, `mysql_native_password` accounts | 11.4 |
 | ClickHouse | users managed by SQL (access management) | 25.8 |
 | Redis / Valkey | Redis 6+ / Valkey 7+ ACL users; standalone, replicas, Sentinel | Redis 7.4, 8.2; Valkey 8 |
+| NATS | 2.10+ in operator (JWT/NKey) mode, any account resolver | 2.10, 2.11, 2.12; nsc 2.15 |
 | External Secrets Operator (optional) | `external-secrets.io/v1` | 2.12 |
 | Vault Secrets Operator (optional) | `secrets.hashicorp.com/v1beta1` | 1.6 |
 
@@ -131,9 +133,9 @@ This creates a Kind cluster `krotos-dev` (on Docker) and installs:
 
 | Namespace | What |
 |---|---|
-| `krotos-deps` | Vault in dev mode (root token `root`), PostgreSQL 17, MySQL 8.4, ClickHouse 25.8, Redis 8.2 (primary + replica, aclfile) |
+| `krotos-deps` | Vault in dev mode (root token `root`), PostgreSQL 17, MySQL 8.4, ClickHouse 25.8, Redis 8.2 (primary + replica, aclfile), NATS 2.12 (operator mode, full resolver) and `nats-box` with the `nsc` store |
 | `external-secrets`, `vault-secrets-operator-system` | External Secrets Operator, Vault Secrets Operator |
-| `team-a` | the operator (Helm), `VaultConnection main-vault`, and four demo apps with rotations |
+| `team-a` | the operator (Helm), `VaultConnection main-vault`, and five demo apps with rotations |
 
 | Rotation | Engine | Application gets the password via | Schedule |
 |---|---|---|---|
@@ -141,6 +143,7 @@ This creates a Kind cluster `krotos-dev` (on Docker) and installs:
 | `billing` | MySQL | External Secrets Operator → Secret `billing-db` | daily at 03:00 UTC |
 | `analytics` | ClickHouse | Vault Secrets Operator → Secret `analytics-db` | every 7 days |
 | `sessions` | Redis, primary + replica, master user from the [least-privilege template](#redis--valkey) | External Secrets Operator → Secret `sessions-redis` | every 7 days |
+| `events` | NATS, scoped signing key from the [least-privilege template](#nats) | Vault Secrets Operator → Secret `events-nats`, mounted as `user.creds` | every 7 days, credentials valid 30 days |
 
 The cluster's kubeconfig is written to `bin/krotos-dev.kubeconfig`; your current kubectl
 context is **not** changed.
@@ -439,6 +442,7 @@ The operator logs in and calls `lookup-self` every 5 minutes (every minute while
 | MariaDB | `ALTER USER 'user'@'host' IDENTIFIED BY PASSWORD '*…'` | `SELECT 1` as the user | A `mysql_native_password` hash. MariaDB does **not** mask `IDENTIFIED BY` in its general log, so the password is never sent. |
 | ClickHouse | `ALTER USER user [ON CLUSTER c] IDENTIFIED WITH sha256_hash BY '…' SALT '…'` | `SELECT 1` as the user | A salted SHA-256 hash. |
 | Redis / Valkey | `ACL SETUSER user resetpass #<sha256>`, then `ACL SAVE` (or `CONFIG REWRITE`), on every node | `AUTH user password` on every node | The SHA-256 hash. Redis also keeps ACL commands out of `MONITOR`. |
+| NATS | Nothing: NATS keeps no users. The operator issues a new user JWT signed by the account signing key. | Connects with the new `.creds` file | Only the connect handshake; the seed signs the server's challenge and is never sent. |
 
 Integration tests check, with statement logging turned on (`log_statement=all`, the general
 log, `system.query_log`), that the plain password never appears in the server's logs.
@@ -536,6 +540,46 @@ ACL SETUSER krotos_rotator +info +config|rewrite
   permission, so in practice this is administrative access. Protect its credentials like an
   administrator's.
 
+#### NATS
+
+NATS has no users to alter: the "master credentials" are an account **signing key**, which
+krotos uses to issue the user's new JWT. Give krotos a key of its own, scoped to a role, so
+that every user it signs gets the role's permissions and nothing more:
+
+```sh
+# nsc 2.x, run against the store that holds the account's keys.
+# ORDERS is the rotated user's account; replace the names and permissions.
+
+# A signing key that only krotos uses, scoped to a role: every user it signs gets
+# exactly the role's permissions, so krotos cannot issue users with more.
+nsc generate nkey --account > krotos-orders.nk   # line 1: seed, line 2: public key
+sed -n 1p krotos-orders.nk > krotos-orders.seed
+nsc edit account --name ORDERS --sk "$(sed -n 2p krotos-orders.nk)"
+nsc edit signing-key --account ORDERS --sk "$(sed -n 2p krotos-orders.nk)" --role krotos-orders \
+  --allow-pub "orders.>" --allow-sub "orders.>,_INBOX.>"
+
+# The user, signed by that key; krotos keeps reissuing it with the same name.
+nsc add user --account ORDERS --name orders-service -K krotos-orders.seed --expiry 60d
+nsc generate creds --account ORDERS --name orders-service > orders-service.creds
+
+# Publish the changed account to the servers (full or URL resolver).
+nsc push --account ORDERS
+```
+
+- Set the role's permissions to what the application needs; krotos keeps reissuing the user
+  with the same name, and the server applies the role.
+- Store the seed (`krotos-orders.seed`, `SA…`) as the master credentials, e.g.
+  `vault kv put secret/nats/orders/signing-key seed=@krotos-orders.seed`, with
+  `masterCredentials.vault.passwordKey: seed`. No username is needed. Store
+  `orders-service.creds` as the target (`target.vault.passwordKey: creds`). Then delete the
+  local key files.
+- An **existing** user must be reissued with the scoped key: users signed by a scoped key must
+  not carry permissions of their own, and the server refuses them otherwise (tested). Remove its
+  permissions and sign it again with `-K krotos-orders.seed`, or add it anew as above.
+- With the memory resolver, regenerate the server configuration instead of `nsc push`.
+- The key can issue users with **any** name in the account, all limited to the role. Protect its
+  seed accordingly.
+
 ### 6.3 The rotated user
 
 - It must exist, and the password in Vault must be its **current** password.
@@ -577,6 +621,35 @@ ACL SETUSER krotos_rotator +info +config|rewrite
     `spec.database.redis.nodes`. The password is changed, persisted and verified on each.
   - **Not supported yet:** Redis Cluster, and managed services (ElastiCache, MemoryDB, Azure
     Cache for Redis, Memorystore), which manage users through their own APIs.
+- **NATS:** users of a server in operator (JWT/NKey) mode. Users defined in the server's config
+  file (`user`/`password`, `nkey`) are not supported.
+  - **What is rotated.** The target secret holds the whole `.creds` file (user JWT and NKey
+    seed) under `target.vault.passwordKey`. The JWT's name must equal `target.username`. Each
+    rotation issues a new user: a new NKey, and a JWT with the current one's name, permissions,
+    limits and tags, expiring after `database.nats.credentialsTTL`. `passwordPolicy` and
+    `database.database` are not used.
+  - **How the old credentials stop working.** NATS accepts every unexpired JWT signed by the
+    account, so the old credentials stay valid **until they expire**; the server then refuses
+    them and drops their connections (tested). Revocation is not implemented yet.
+  - **The TTL.** `credentialsTTL` must be at least twice the longest time between two rotations
+    under the schedule and window, so that one failed rotation does not let the credentials in
+    use expire; otherwise the spec is refused (`Ready=False`, `InvalidSpec`). `every: 7d` with a
+    daily window needs at least `336h`. Watch `status.credentialsExpireTime` and the
+    `krotos_credentials_expiry_timestamp_seconds` metric ([15.3](#153-suggested-alerts)).
+  - **Already expired credentials** do not stop a rotation: applications cannot connect anyway,
+    and new credentials are the fix. The rotation goes on with a `CredentialsExpired` warning.
+  - **Nothing is changed on the server**, so any account resolver works and a rollback has
+    nothing to undo. The account JWT on the servers must list the signing key (`nsc push`).
+  - **Applications** read the file: mount the synced Secret's key as a file, or read it from
+    Vault.
+
+    ```yaml
+    volumes:
+    - name: nats-creds
+      secret:
+        secretName: orders-nats
+        items: [{key: creds, path: user.creds}]
+    ```
 
 ### 6.4 TLS to the database
 
@@ -737,7 +810,7 @@ One object rotates the password of **one** database user.
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `engine` | `postgresql` \| `mysql` \| `clickhouse` \| `redis` | yes | | Use `mysql` for MariaDB and `redis` for Valkey. |
+| `engine` | `postgresql` \| `mysql` \| `clickhouse` \| `redis` \| `nats` | yes | | Use `mysql` for MariaDB and `redis` for Valkey. |
 | `suspend` | bool | | `false` | Stop starting new rotations. A rotation in progress is finished. |
 | `database` | object | yes | | See below. |
 | `masterCredentials` | object | yes | | See below. |
@@ -762,6 +835,7 @@ One object rotates the password of **one** database user.
 | `clickhouse.protocol` | `native` \| `http` | | `native` | Use the port that matches the protocol (native 9000/9440, HTTP 8123/8443). |
 | `redis.persistence` | `Auto` \| `ACLFile` \| `ConfigRewrite` \| `None` | | `Auto` | How the change survives a restart; see [6.3](#63-the-rotated-user). Only allowed with `engine: redis`. |
 | `redis.nodes` | list of `host:port` (max 16) | | | Further servers that get the same change, such as replicas. |
+| `nats.credentialsTTL` | duration | with `engine: nats` | | How long issued credentials stay valid; at least twice the longest time between two rotations. Required with `engine: nats`, and only allowed then. |
 
 #### `masterCredentials` (exactly one of `vault` or `secretRef`)
 
@@ -778,7 +852,8 @@ One object rotates the password of **one** database user.
 | `secretRef.passwordKey` | string | | `password` | |
 
 The master credentials are read at every reconcile of an in-flight rotation; nothing is cached
-on disk. The master password itself is never rotated by krotos.
+on disk. The master password itself is never rotated by krotos. For NATS the password key holds
+the account signing key's seed and no username is needed.
 
 #### `target`
 
@@ -790,7 +865,7 @@ on disk. The master password itself is never rotated by krotos.
 | `vault.mount` | string | | `secret` | |
 | `vault.path` | string | yes | | The user's secret; must exist and hold the current password. |
 | `vault.kvVersion` | `1` \| `2` | | `2` | |
-| `vault.passwordKey` | string | | `password` | Key the password is read from and written to. |
+| `vault.passwordKey` | string | | `password` | Key the password is read from and written to (NATS: the `.creds` file). |
 | `vault.usernameKey` | string | | | When set, this key is also written with `username` on every rotation. |
 | `vault.pendingPath` | string | | `krotos/pending/<namespace>/<name>` | Where in-flight rotations keep their passwords (same mount and KV version). |
 
@@ -834,7 +909,7 @@ current-password check and before anything is changed.
 | `type` | `None` \| `ExternalSecret` \| `VaultStaticSecret` | `None` | How applications receive the password. See [Delivering the password](#12-delivering-the-password-to-applications). |
 | `externalSecret.name` | string | | The `ExternalSecret`. Required for, and only allowed with, `type: ExternalSecret`. |
 | `externalSecret.secretName` | string | | The Secret it writes. |
-| `externalSecret.secretKey` | string | `password` | Key in that Secret holding the plain password. |
+| `externalSecret.secretKey` | string | `target.vault.passwordKey` | Key in that Secret holding the plain password. Both sync operators copy Vault's keys as they are, so the default fits unless the Secret is templated. |
 | `vaultStaticSecret.*` | | | Same fields, for `type: VaultStaticSecret`. |
 | `timeout` | duration | `5m` | How long to wait for the Secret to hold the new password. |
 
@@ -855,13 +930,15 @@ The API server rejects:
 - `window.duration` ≤ 0 or > 24h; `window.start` not `HH:MM`; `minRemaining` < 0 or ≥ `duration`;
 - `database.clickhouse` unless `engine: clickhouse`; `database.redis` unless `engine: redis`;
   `target.mysqlHost` unless `engine: mysql`; an unknown `database.redis.persistence`;
+  `database.nats` missing with `engine: nats`, or set with another engine;
 - `tls.mode` `verify-ca`/`verify-full` without `caSecretRef`;
 - `secretSync.externalSecret`/`vaultStaticSecret` missing for, or set without, the matching `type`;
 - a restart target with both or neither of `name` / `selector`;
 - `kvVersion` other than 1 or 2; `passwordPolicy.length` outside 16–128.
 
 Checked by the operator (reported as `Ready=False`, reason `InvalidSpec`): unknown time zone,
-invalid cron expression.
+invalid cron expression, a `nats.credentialsTTL` shorter than twice the longest time between two
+rotations.
 
 ### 9.2 Annotations
 
@@ -888,6 +965,7 @@ in progress are removed when that rotation ends; they do not trigger another att
 | `consecutiveFailures` | Failed attempts since the last success. |
 | `secretSyncStartTime` | When the in-flight rotation triggered the secret sync. |
 | `rolloutStartTime` | When the in-flight rotation started restarting workloads. |
+| `credentialsExpireTime` | When the credentials issued by the last rotation expire (NATS only). |
 | `message` | Human-readable state. Never contains secrets. |
 | `observedGeneration` | |
 | `conditions` | See below. |
@@ -897,7 +975,7 @@ in progress are removed when that rotation ends; they do not trigger another att
 | Type | Status / Reason | Meaning |
 |---|---|---|
 | `Ready` | `True` / `SpecValid` | The spec can be used. |
-| | `False` / `InvalidSpec` | Unknown time zone or invalid cron expression. No rotation starts. |
+| | `False` / `InvalidSpec` | Unknown time zone, invalid cron expression, or a NATS credentials TTL that is too short. No rotation starts. |
 | | `False` / `EngineNotSupported` | The engine is not available in this operator build. |
 | `Rotated` | `True` / `RotationSucceeded` | The last attempt rotated the password. |
 | | `False` / `RotationFailed` | The last attempt failed before anything was changed. |
@@ -1010,6 +1088,11 @@ Otherwise the attempt fails with nothing changed (`Rotated=False`, reason `Rotat
 Typical message: *"The current password in Vault does not work for "orders_app", not rotating"*.
 This protects against rotating a user whose Vault entry is already wrong.
 
+One exception: NATS credentials that are valid but **expired**. Applications cannot connect
+with them anyway and new credentials are what fixes that, so the rotation goes on with a
+`CredentialsExpired` warning event. For NATS, the current credentials must also belong to
+`target.username`.
+
 ### 11.3 Retries and rollback
 
 | Step | Attempts | Back-off between attempts | When attempts are exhausted |
@@ -1079,7 +1162,7 @@ secretSync:
   externalSecret:
     name: orders-db        # the ExternalSecret
     secretName: orders-db  # the Secret it writes (spec.target.name of the ExternalSecret)
-    secretKey: password    # key in that Secret holding the plain password
+    secretKey: password    # key in that Secret holding the plain password (default: target.vault.passwordKey)
   timeout: 5m
 ```
 
@@ -1216,6 +1299,7 @@ The e2e tests check that the operator's logs contain none of the old, new or mas
 | `RolledBack` | Warning | An attempt failed and the old password was restored. |
 | `RotationStuck` | Warning | A rollback keeps failing, or in-flight state is lost. |
 | `RolloutIncomplete` | Warning | Secret sync or restarts did not complete. |
+| `CredentialsExpired` | Warning | The current NATS credentials had expired; new ones are issued. |
 
 ```sh
 kubectl get events -n team-a --field-selector involvedObject.kind=DatabaseCredentialRotation
@@ -1235,6 +1319,7 @@ ServiceMonitor.
 | `krotos_next_rotation_timestamp_seconds` | gauge | `namespace`, `name` | When the next rotation becomes due. |
 | `krotos_rotation_degraded` | gauge | `namespace`, `name` | 1 while `Degraded=True`. |
 | `krotos_rotation_consecutive_failures` | gauge | `namespace`, `name` | Failed attempts since the last success. |
+| `krotos_credentials_expiry_timestamp_seconds` | gauge | `namespace`, `name` | When the credentials issued by the last rotation expire (NATS only). |
 | `krotos_vault_connection_ready` | gauge | `namespace`, `name` | 1 when the operator can log in to Vault. |
 
 Series of deleted objects are removed. The standard controller-runtime metrics
@@ -1260,6 +1345,11 @@ groups:
     expr: time() - krotos_next_rotation_timestamp_seconds > 2 * 86400
     annotations:
       summary: "{{ $labels.namespace }}/{{ $labels.name }}: rotation overdue"
+  - alert: KrotosCredentialsExpiringSoon
+    # NATS: the credentials in use expire within 3 days
+    expr: krotos_credentials_expiry_timestamp_seconds - time() < 3 * 86400
+    annotations:
+      summary: "{{ $labels.namespace }}/{{ $labels.name }}: credentials expire soon"
   - alert: KrotosVaultUnreachable
     expr: krotos_vault_connection_ready == 0
     for: 10m
@@ -1312,7 +1402,7 @@ checks as `Vault connection check failed`.
 
 Check in this order:
 
-1. `Ready` condition: `InvalidSpec` (time zone, cron) or `EngineNotSupported`.
+1. `Ready` condition: `InvalidSpec` (time zone, cron, NATS credentials TTL) or `EngineNotSupported`.
 2. `spec.suspend`.
 3. `status.phase`: `Idle` → not due yet (`nextScheduledTime`); `Waiting` → due, the window is
    closed or less than `minRemaining` is left (`nextWindowStart`); `Failed` → the last attempt
@@ -1329,6 +1419,8 @@ Check in this order:
 | `Preparing rotation: VaultConnection "x" not found` | Wrong `connectionRef`. | |
 | `Preparing rotation: master credentials: …` | Master secret missing, wrong keys, or permission denied. | Check the path, keys and policy. |
 | `permission denied` on `krotos/pending/…` | The policy lacks the pending path. | Add it ([5.2](#52-policy)). |
+| `the current credentials belong to user "x", not "y"` (NATS) | The `.creds` file in Vault is another user's. | Fix `target.username` or the Vault path. |
+| `not a NATS .creds file` / `the master password is not an NKey seed` (NATS) | Wrong key in Vault, or a password where a `.creds` file / seed belongs. | Check `passwordKey` on both sides ([6.2](#nats)). |
 
 ### `Rotated=False`, reason `RolledBack`
 
@@ -1348,6 +1440,7 @@ password — either restored, or never changed. The message is *"Rolled back to 
 | `alter user "x": … storage is readonly` (ClickHouse) | The user is defined in `users.xml`. | Recreate it with SQL. |
 | `acl setuser "x": NOPERM …` / `acl save: NOPERM …` (Redis) | The rotator lacks the template's commands. | See [6.2](#62-master-user-privileges). |
 | `alter user "x": … Not enough privileges` (ClickHouse) | Missing `ALTER USER` (or `CLUSTER` for `ON CLUSTER`). | See [6.2](#62-master-user-privileges). |
+| `Logging in with the new password: connect as "x": nats: authorization violation` (NATS) | The account does not know the signing key (not pushed), or a scoped key signed a user that carries its own permissions. | `nsc push` the account; reissue the user with the scoped key ([6.2](#nats)). Nothing was changed. |
 | `Logging in with the new password: …` | The password changed but the user cannot log in with it: an authentication method that does not support SCRAM, or a connection pooler with its own password list (PgBouncer `auth_file`). | Fix authentication; the old password was restored. |
 | `Writing the new password to Vault: … permission denied` | The target `VaultConnection` lacks `create`/`update` on the target path. | Fix the policy ([5.2](#52-policy)); the old password was restored. |
 
@@ -1414,6 +1507,10 @@ applications that reconnect. (Dual-password approaches are not implemented.)
 
 **Does it rotate the master password?** No.
 
+**Are old NATS credentials revoked?** Not yet: they stay valid until they expire, which is why
+`credentialsTTL` is required. Revocation needs the operator's signing key and a system account
+user, much more than krotos holds now; it is on the roadmap as an option.
+
 **What about existing passwords with non-ASCII characters (PostgreSQL)?** Generated passwords are
 always printable ASCII. A pre-existing password with other characters can be rotated *away
 from*, but if that first rotation has to be rolled back after the database was changed, the
@@ -1461,7 +1558,7 @@ test/chart/            chart consistency check
 
 ```sh
 make test              # unit tests and envtest (no Docker)
-make test-integration  # + real Vault, PostgreSQL, MySQL, MariaDB, ClickHouse, Redis, Valkey in Docker (testcontainers)
+make test-integration  # + real Vault, PostgreSQL, MySQL, MariaDB, ClickHouse, Redis, Valkey, NATS in Docker (testcontainers)
 make test-e2e          # Kind: Helm install, Vault Kubernetes auth, rotations with restarts, ESO, VSO, metrics
 make lint
 make dev-up / dev-down # local environment (section 3)
@@ -1496,7 +1593,9 @@ from the commits. Tags with a hyphen (`v0.2.0-rc.1`) become pre-releases and do 
 Implement `engine.Engine` (`SetPassword`, `VerifyLogin`) in `internal/engine/<name>/`; it must
 never put the password in errors and should keep it out of server logs. When some settings can
 only be checked against the server, also implement `engine.Preflighter`: it runs before anything
-changes, and an error stops the rotation. Add the engine to the `Engine` enum in
+changes, and an error stops the rotation. An engine that creates the new secret itself (NATS)
+implements `engine.Issuer`; one whose secrets expire implements `engine.Expirer` and returns
+`engine.ErrCredentialsExpired` from `VerifyLogin` for expired ones. Add the engine to the `Engine` enum in
 `api/v1alpha1`, register it in `cmd/main.go`, and add integration tests that check the server's
 logs. Add a least-privilege template to `docs/least-privilege/`, a test that rotates with a user
 created from it, and the template to [6.2](#62-master-user-privileges) (a test checks the README
@@ -1513,8 +1612,8 @@ has two parts: what it can rotate, and where it can keep the result.
 
 | Status | Target | Notes |
 |---|---|---|
-| Supported | PostgreSQL, MySQL, MariaDB, ClickHouse, Redis, Valkey | See [Database setup](#6-database-setup). |
-| Planned | **NATS** | Rotate the credentials (`.creds` files) of NATS users in JWT/NKey (operator) mode. |
+| Supported | PostgreSQL, MySQL, MariaDB, ClickHouse, Redis, Valkey, NATS (JWT/NKey) | See [Database setup](#6-database-setup). |
+| Planned | **NATS revocation** | Optionally revoke the old user in the account JWT right after a rotation, instead of waiting for expiry. |
 | Planned | **Redis Cluster** | Discover the cluster's nodes and change the password on each. |
 
 ### 20.2 Secret sources

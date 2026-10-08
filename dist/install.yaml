@@ -97,6 +97,20 @@ spec:
                     description: host name or IP address of the database server.
                     minLength: 1
                     type: string
+                  nats:
+                    description: nats holds NATS specific settings. Required when
+                      engine is nats.
+                    properties:
+                      credentialsTTL:
+                        description: |-
+                          credentialsTTL is how long issued user credentials stay valid. NATS keeps no
+                          users on the server, so expiry is what retires the old credentials. It must be
+                          at least twice the longest time between two rotations, so that one failed
+                          rotation does not let the credentials in use expire.
+                        type: string
+                    required:
+                    - credentialsTTL
+                    type: object
                   port:
                     description: port of the database server.
                     format: int32
@@ -173,6 +187,7 @@ spec:
                 - mysql
                 - clickhouse
                 - redis
+                - nats
                 type: string
               masterCredentials:
                 description: masterCredentials are used to change the target user's
@@ -368,9 +383,9 @@ spec:
                         minLength: 1
                         type: string
                       secretKey:
-                        default: password
-                        description: secretKey is the key in secretName that holds
-                          the password.
+                        description: |-
+                          secretKey is the key in secretName that holds the password. Defaults to
+                          target.vault.passwordKey, the key the sync operators copy from Vault.
                         type: string
                       secretName:
                         description: secretName is the Secret produced by the sync
@@ -402,9 +417,9 @@ spec:
                         minLength: 1
                         type: string
                       secretKey:
-                        default: password
-                        description: secretKey is the key in secretName that holds
-                          the password.
+                        description: |-
+                          secretKey is the key in secretName that holds the password. Defaults to
+                          target.vault.passwordKey, the key the sync operators copy from Vault.
                         type: string
                       secretName:
                         description: secretName is the Secret produced by the sync
@@ -558,6 +573,9 @@ spec:
               rule: '!has(self.target.mysqlHost) || self.engine == ''mysql'''
             - message: database.redis is only allowed when engine is redis
               rule: '!has(self.database.redis) || self.engine == ''redis'''
+            - message: database.nats is required when engine is nats, and only allowed
+                then
+              rule: has(self.database.nats) == (self.engine == 'nats')
           status:
             description: DatabaseCredentialRotationStatus defines the observed state
               of DatabaseCredentialRotation.
@@ -626,6 +644,12 @@ spec:
                   last success.
                 format: int32
                 type: integer
+              credentialsExpireTime:
+                description: |-
+                  credentialsExpireTime is when the credentials issued by the last rotation
+                  expire. Only set for engines whose credentials expire (nats).
+                format: date-time
+                type: string
               lastAttemptTime:
                 description: lastAttemptTime is when the last rotation started.
                 format: date-time

@@ -199,3 +199,57 @@ spec:
     timeout: 3m
   restartTargets:
   - {kind: Deployment, name: sessions-api}
+---
+# events: NATS in operator mode; krotos signs with the scoped key from
+# docs/least-privilege/nats.sh. Vault Secrets Operator writes events-nats, which the
+# application mounts as its .creds file.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: events-api
+  namespace: team-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: events-api}
+  template:
+    metadata:
+      labels: {app: events-api}
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: app
+        image: natsio/nats-box:0.20.0
+        command: ["nats", "sub", "events.>", "--creds", "/creds/user.creds", "-s", "nats://nats.krotos-deps.svc:4222"]
+        volumeMounts: [{name: creds, mountPath: /creds, readOnly: true}]
+      volumes:
+      - name: creds
+        secret:
+          secretName: events-nats
+          items: [{key: creds, path: user.creds}]
+---
+apiVersion: krotos.warewave.io/v1alpha1
+kind: DatabaseCredentialRotation
+metadata:
+  name: events
+  namespace: team-a
+spec:
+  engine: nats
+  database:
+    host: nats.krotos-deps.svc
+    port: 4222
+    tls: {mode: disable}
+    nats: {credentialsTTL: 720h}
+  masterCredentials:
+    vault: {connectionRef: main-vault, path: db/nats/events-signing-key, passwordKey: seed}
+  target:
+    username: events-service
+    vault: {connectionRef: main-vault, path: apps/events/nats, passwordKey: creds}
+  schedule: {every: 7d}
+  window: {timezone: UTC, start: "00:00", duration: 24h}
+  secretSync:
+    type: VaultStaticSecret
+    vaultStaticSecret: {name: events-nats, secretName: events-nats}
+    timeout: 3m
+  restartTargets:
+  - {kind: Deployment, name: events-api}

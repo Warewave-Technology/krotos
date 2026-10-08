@@ -78,6 +78,12 @@ var (
 		Help: "Failed rotation attempts since the last success.",
 	}, []string{labelNamespace, labelName})
 
+	// CredentialsExpiry is when the credentials issued by the last rotation expire.
+	CredentialsExpiry = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "krotos_credentials_expiry_timestamp_seconds",
+		Help: "Unix time at which the credentials issued by the last rotation expire (engines with expiring credentials only).",
+	}, []string{labelNamespace, labelName})
+
 	// VaultConnectionReady is 1 when the operator can log in to Vault.
 	VaultConnectionReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "krotos_vault_connection_ready",
@@ -87,7 +93,8 @@ var (
 
 func init() {
 	ctrlmetrics.Registry.MustRegister(
-		RotationsTotal, RotationDuration, LastSuccess, NextRotation, Degraded, ConsecutiveFailures, VaultConnectionReady,
+		RotationsTotal, RotationDuration, LastSuccess, NextRotation, Degraded, ConsecutiveFailures, CredentialsExpiry,
+		VaultConnectionReady,
 	)
 }
 
@@ -112,6 +119,7 @@ func ForgetRotation(namespace, name string) {
 	NextRotation.Delete(labels)
 	Degraded.Delete(labels)
 	ConsecutiveFailures.Delete(labels)
+	CredentialsExpiry.Delete(labels)
 }
 
 // ForgetVaultConnection drops the series of a deleted VaultConnection.

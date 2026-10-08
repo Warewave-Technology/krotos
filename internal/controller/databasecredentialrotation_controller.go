@@ -78,6 +78,7 @@ const (
 	ReasonRotationStuck      = "RotationStuck"
 	ReasonRolloutIncomplete  = "RolloutIncomplete"
 	ReasonAsExpected         = "AsExpected"
+	ReasonCredentialsExpired = "CredentialsExpired"
 )
 
 // DatabaseCredentialRotationReconciler rotates database passwords on schedule.
@@ -152,6 +153,9 @@ func recordStatusMetrics(obj *krotosv1alpha1.DatabaseCredentialRotation) {
 	metrics.Degraded.WithLabelValues(ns, name).Set(metrics.Bool(
 		meta.IsStatusConditionTrue(st.Conditions, krotosv1alpha1.ConditionDegraded)))
 	metrics.ConsecutiveFailures.WithLabelValues(ns, name).Set(float64(st.ConsecutiveFailures))
+	if st.CredentialsExpireTime != nil {
+		metrics.CredentialsExpiry.WithLabelValues(ns, name).Set(metrics.Timestamp(st.CredentialsExpireTime.Time))
+	}
 }
 
 func (r *DatabaseCredentialRotationReconciler) updateFinalizer(
@@ -180,6 +184,9 @@ func (r *DatabaseCredentialRotationReconciler) reconcile(
 	obj.Status.ObservedGeneration = obj.Generation
 
 	planner, specErr := schedule.NewPlanner(&obj.Spec)
+	if specErr == nil {
+		specErr = checkCredentialsTTL(obj, planner, now)
+	}
 	eng, engineOK := r.Engines[obj.Spec.Engine]
 	switch {
 	case specErr != nil:
@@ -326,6 +333,13 @@ func (r *DatabaseCredentialRotationReconciler) afterVaultWritten(
 	st := &obj.Status
 	if st.Step == krotosv1alpha1.StepVaultWritten {
 		if st.SecretSyncStartTime == nil {
+			if exp, ok := target.Engine.(engine.Expirer); ok {
+				if p, err := target.Pending.Load(ctx); err == nil && p != nil {
+					if t, ok := exp.ExpiresAt(p.NewPassword); ok {
+						st.CredentialsExpireTime = &metav1.Time{Time: t}
+					}
+				}
+			}
 			// No rollback is possible from here on, so the old and new passwords are not needed.
 			if err := target.Pending.Delete(ctx); err != nil {
 				st.Message = "Removing the pending passwords from Vault: " + err.Error()
@@ -406,7 +420,7 @@ func (r *DatabaseCredentialRotationReconciler) syncSecret(
 		return wait("Reading the new password from Vault: " + err.Error())
 	}
 	password, _ := current.Data[target.PasswordKey].(string)
-	synced, err := syncer.Synced(ctx, spec, password)
+	synced, err := syncer.Synced(ctx, spec, target.PasswordKey, password)
 	switch {
 	case err != nil:
 		return wait("Checking the synced Secret: " + err.Error())
@@ -579,6 +593,23 @@ func (r *DatabaseCredentialRotationReconciler) event(
 	if r.Recorder != nil {
 		r.Recorder.Eventf(obj, nil, eventType, reason, "Rotate", note, args...)
 	}
+}
+
+// checkCredentialsTTL makes sure expiring credentials outlive one missed rotation:
+// the TTL must be at least twice the longest gap between two rotations.
+func checkCredentialsTTL(obj *krotosv1alpha1.DatabaseCredentialRotation, planner *schedule.Planner, now time.Time) error {
+	n := obj.Spec.Database.NATS
+	if n == nil {
+		return nil
+	}
+	ttl := n.CredentialsTTL.Duration
+	gap := planner.MaxGap(now)
+	if ttl < 2*gap {
+		return fmt.Errorf("database.nats.credentialsTTL (%s) must be at least twice the longest time between two rotations "+
+			"(%s with this schedule and window), so that one failed rotation does not let the credentials expire; use at least %s",
+			ttl, gap, (2 * gap).Round(time.Hour))
+	}
+	return nil
 }
 
 func failureBackoff(failures int32) time.Duration {

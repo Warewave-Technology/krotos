@@ -19,6 +19,7 @@ package rotation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -265,6 +266,75 @@ func TestRunPreflightRefusalChangesNothing(t *testing.T) {
 	f.assertConsistent(t, oldPassword)
 	if f.pending.p != nil || len(f.persisted) != 0 {
 		t.Errorf("state was touched: pending=%v persisted=%v", f.pending.p, f.persisted)
+	}
+}
+
+// issuingDB creates the new secret itself and has expiring credentials, like NATS.
+type issuingDB struct {
+	*fakeDB
+	expired    map[string]bool
+	issuedFrom string
+}
+
+func (d *issuingDB) Issue(_ context.Context, _ engine.Endpoint, _ engine.Credentials, _ engine.Account, current string) (string, error) {
+	d.issuedFrom = current
+	return newPassword, nil
+}
+
+func (d *issuingDB) VerifyLogin(ctx context.Context, ep engine.Endpoint, c engine.Credentials) error {
+	if d.expired[c.Password] {
+		return fmt.Errorf("%w at some time", engine.ErrCredentialsExpired)
+	}
+	return d.fakeDB.VerifyLogin(ctx, ep, c)
+}
+
+func TestRunIssuerCreatesTheSecret(t *testing.T) {
+	f := newFixture()
+	db := &issuingDB{fakeDB: f.db}
+	f.target.Engine = db
+	f.target.NewPassword = func() (string, error) { return "", errors.New("must not be called") }
+
+	if res := f.run(t); res.Outcome != OutcomeVaultWritten {
+		t.Fatalf("outcome = %s (%s)", res.Outcome, res.Message)
+	}
+	if db.issuedFrom != oldPassword {
+		t.Errorf("issued from %q, want the current secret", db.issuedFrom)
+	}
+	f.assertConsistent(t, newPassword)
+}
+
+func TestRunReplacesExpiredCredentials(t *testing.T) {
+	f := newFixture()
+	f.target.Engine = &issuingDB{fakeDB: f.db, expired: map[string]bool{oldPassword: true}}
+	var warnings []string
+	f.target.Warn = func(msg string) { warnings = append(warnings, msg) }
+
+	if res := f.run(t); res.Outcome != OutcomeVaultWritten {
+		t.Fatalf("outcome = %s (%s)", res.Outcome, res.Message)
+	}
+	f.assertConsistent(t, newPassword)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "expired") {
+		t.Errorf("warnings = %q", warnings)
+	}
+}
+
+func TestRunRollbackWithExpiredOldCredentials(t *testing.T) {
+	// Nothing on the server has to be restored for expiring credentials, so the
+	// rollback must not get stuck trying to log in with them.
+	f := newFixture()
+	f.target.Engine = &issuingDB{fakeDB: f.db, expired: map[string]bool{oldPassword: true}}
+	f.db.verifyFailures = -1
+	f.db.failOnlyFor = newPassword
+
+	var res Result
+	for range maxDBRetries {
+		res = f.run(t)
+	}
+	if res.Outcome != OutcomeFailed || !res.RolledBack {
+		t.Fatalf("outcome = %s rolledBack=%v (%s)", res.Outcome, res.RolledBack, res.Message)
+	}
+	if f.vault.data["password"] != oldPassword {
+		t.Errorf("vault password = %q, Vault must keep the old credentials", f.vault.data["password"])
 	}
 }
 

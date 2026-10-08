@@ -27,6 +27,7 @@ package rotation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"time"
@@ -82,6 +83,8 @@ type Target struct {
 
 	Pending     PendingStore
 	NewPassword func() (string, error)
+	// Warn reports a problem that does not stop the rotation. Optional.
+	Warn func(msg string)
 }
 
 // State is the persisted progress of a rotation.
@@ -159,7 +162,11 @@ func start(ctx context.Context, t *Target, st *State, persist Persist) *Result {
 	if !ok || oldPassword == "" {
 		return failed("Vault secret %s has no string key %q", t.VaultRef, t.PasswordKey)
 	}
-	if err := t.Engine.VerifyLogin(ctx, t.Endpoint, creds(t, oldPassword)); err != nil {
+	switch err := t.Engine.VerifyLogin(ctx, t.Endpoint, creds(t, oldPassword)); {
+	case errors.Is(err, engine.ErrCredentialsExpired):
+		// Applications cannot log in already; new credentials are what fixes that.
+		t.warn(fmt.Sprintf("The current credentials of %q in Vault have expired; issuing new ones", t.Account.Username))
+	case err != nil:
 		return failed("The current password in Vault does not work for %q, not rotating: %v", t.Account.Username, err)
 	}
 	if pf, ok := t.Engine.(engine.Preflighter); ok {
@@ -168,9 +175,14 @@ func start(ctx context.Context, t *Target, st *State, persist Persist) *Result {
 		}
 	}
 
-	newPassword, err := t.NewPassword()
+	var newPassword string
+	if issuer, ok := t.Engine.(engine.Issuer); ok {
+		newPassword, err = issuer.Issue(ctx, t.Endpoint, t.Master, t.Account, oldPassword)
+	} else {
+		newPassword, err = t.NewPassword()
+	}
 	if err != nil {
-		return failed("Generating password: %v", err)
+		return failed("Generating the new credentials: %v", err)
 	}
 	if err := t.Pending.Save(ctx, &Pending{OldPassword: oldPassword, NewPassword: newPassword}); err != nil {
 		return failed("Saving pending password: %v", err)
@@ -249,6 +261,10 @@ func rollback(ctx context.Context, t *Target, st *State, persist Persist) *Resul
 	// undo; this also keeps a permanent ALTER error (e.g. a missing privilege) from
 	// failing the rollback forever.
 	err := t.Engine.VerifyLogin(ctx, t.Endpoint, creds(t, p.OldPassword))
+	if errors.Is(err, engine.ErrCredentialsExpired) {
+		// Expiring credentials are not stored on the server: nothing to restore.
+		err = nil
+	}
 	if err != nil {
 		err = t.Engine.SetPassword(ctx, t.Endpoint, t.Master, t.Account, p.OldPassword)
 		if err == nil {
@@ -335,6 +351,12 @@ func loadPending(ctx context.Context, t *Target) (*Pending, *Result) {
 func vaultHasPassword(ctx context.Context, t *Target, password string) bool {
 	s, err := t.Vault.Read(ctx, t.VaultRef)
 	return err == nil && s.Data[t.PasswordKey] == password
+}
+
+func (t *Target) warn(msg string) {
+	if t.Warn != nil {
+		t.Warn(msg)
+	}
 }
 
 func creds(t *Target, password string) engine.Credentials {

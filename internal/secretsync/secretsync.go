@@ -127,15 +127,16 @@ func (s *Syncer) Trigger(ctx context.Context, spec krotosv1alpha1.SecretSync, to
 	return nil
 }
 
-// Synced reports whether the synced Secret holds password under the configured key.
-func (s *Syncer) Synced(ctx context.Context, spec krotosv1alpha1.SecretSync, password string) (bool, error) {
+// Synced reports whether the synced Secret holds password under the configured key,
+// or under defaultKey (the Vault key, which the sync operators copy) when none is set.
+func (s *Syncer) Synced(ctx context.Context, spec krotosv1alpha1.SecretSync, defaultKey, password string) (bool, error) {
 	_, _, ref, err := target(spec)
 	if err != nil {
 		return false, err
 	}
 	key := ref.SecretKey
 	if key == "" {
-		key = "password"
+		key = defaultKey
 	}
 	var sec corev1.Secret
 	if err := s.Reader.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: ref.SecretName}, &sec); err != nil {

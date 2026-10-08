@@ -22,7 +22,7 @@ import (
 )
 
 // Engine is a supported database engine.
-// +kubebuilder:validation:Enum=postgresql;mysql;clickhouse;redis
+// +kubebuilder:validation:Enum=postgresql;mysql;clickhouse;redis;nats
 type Engine string
 
 const (
@@ -31,12 +31,15 @@ const (
 	EngineClickHouse Engine = "clickhouse"
 	// EngineRedis covers Redis 6+ and Valkey (ACL users).
 	EngineRedis Engine = "redis"
+	// EngineNATS covers NATS users in JWT/NKey (operator) mode; the rotated value is a .creds file.
+	EngineNATS Engine = "nats"
 )
 
 // DatabaseCredentialRotationSpec defines the desired state of DatabaseCredentialRotation.
 // +kubebuilder:validation:XValidation:rule="!has(self.database.clickhouse) || self.engine == 'clickhouse'",message="database.clickhouse is only allowed when engine is clickhouse"
 // +kubebuilder:validation:XValidation:rule="!has(self.target.mysqlHost) || self.engine == 'mysql'",message="target.mysqlHost is only allowed when engine is mysql"
 // +kubebuilder:validation:XValidation:rule="!has(self.database.redis) || self.engine == 'redis'",message="database.redis is only allowed when engine is redis"
+// +kubebuilder:validation:XValidation:rule="has(self.database.nats) == (self.engine == 'nats')",message="database.nats is required when engine is nats, and only allowed then"
 type DatabaseCredentialRotationSpec struct {
 	// engine of the target database.
 	// +required
@@ -119,6 +122,20 @@ type DatabaseEndpoint struct {
 	// redis holds Redis / Valkey specific settings.
 	// +optional
 	Redis *RedisSettings `json:"redis,omitempty"`
+
+	// nats holds NATS specific settings. Required when engine is nats.
+	// +optional
+	NATS *NATSSettings `json:"nats,omitempty"`
+}
+
+// NATSSettings configures NATS credentials rotation.
+type NATSSettings struct {
+	// credentialsTTL is how long issued user credentials stay valid. NATS keeps no
+	// users on the server, so expiry is what retires the old credentials. It must be
+	// at least twice the longest time between two rotations, so that one failed
+	// rotation does not let the credentials in use expire.
+	// +required
+	CredentialsTTL metav1.Duration `json:"credentialsTTL"`
 }
 
 // TLSMode selects how TLS is used towards the database.
@@ -394,8 +411,8 @@ type SyncedSecretReference struct {
 	// +required
 	SecretName string `json:"secretName"`
 
-	// secretKey is the key in secretName that holds the password.
-	// +kubebuilder:default=password
+	// secretKey is the key in secretName that holds the password. Defaults to
+	// target.vault.passwordKey, the key the sync operators copy from Vault.
 	// +optional
 	SecretKey string `json:"secretKey,omitempty"`
 }
@@ -504,6 +521,11 @@ type DatabaseCredentialRotationStatus struct {
 	// nextWindowStart is when the next change window opens.
 	// +optional
 	NextWindowStart *metav1.Time `json:"nextWindowStart,omitempty"`
+
+	// credentialsExpireTime is when the credentials issued by the last rotation
+	// expire. Only set for engines whose credentials expire (nats).
+	// +optional
+	CredentialsExpireTime *metav1.Time `json:"credentialsExpireTime,omitempty"`
 
 	// retries counts failed attempts of the current step.
 	// +optional

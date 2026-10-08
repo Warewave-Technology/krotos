@@ -113,6 +113,12 @@ var _ = Describe("API validation", func() {
 		Entry("redis settings on postgresql", func(s *krotosv1alpha1.DatabaseCredentialRotationSpec) {
 			s.Database.Redis = &krotosv1alpha1.RedisSettings{Persistence: krotosv1alpha1.RedisPersistenceNone}
 		}, "only allowed when engine is redis"),
+		Entry("nats without nats settings", func(s *krotosv1alpha1.DatabaseCredentialRotationSpec) {
+			s.Engine = krotosv1alpha1.EngineNATS
+		}, "database.nats is required when engine is nats"),
+		Entry("nats settings on postgresql", func(s *krotosv1alpha1.DatabaseCredentialRotationSpec) {
+			s.Database.NATS = &krotosv1alpha1.NATSSettings{CredentialsTTL: metav1.Duration{Duration: time.Hour}}
+		}, "database.nats is required when engine is nats"),
 		Entry("unknown redis persistence", func(s *krotosv1alpha1.DatabaseCredentialRotationSpec) {
 			s.Engine = krotosv1alpha1.EngineRedis
 			s.Database.Redis = &krotosv1alpha1.RedisSettings{Persistence: "Sometimes"}

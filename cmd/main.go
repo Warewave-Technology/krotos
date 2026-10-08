@@ -42,6 +42,7 @@ import (
 	"github.com/Warewave-Technology/krotos/internal/engine"
 	"github.com/Warewave-Technology/krotos/internal/engine/clickhouse"
 	"github.com/Warewave-Technology/krotos/internal/engine/mysql"
+	"github.com/Warewave-Technology/krotos/internal/engine/nats"
 	"github.com/Warewave-Technology/krotos/internal/engine/postgres"
 	"github.com/Warewave-Technology/krotos/internal/engine/redis"
 	"github.com/Warewave-Technology/krotos/internal/rotation"
@@ -231,6 +232,7 @@ func main() {
 			krotosv1alpha1.EngineMySQL:      mysql.Engine{},
 			krotosv1alpha1.EngineClickHouse: clickhouse.Engine{},
 			krotosv1alpha1.EngineRedis:      redis.Engine{},
+			krotosv1alpha1.EngineNATS:       nats.Engine{},
 		},
 		OpenVault: func(ctx context.Context, conn *krotosv1alpha1.VaultConnection) (rotation.SecretStore, error) {
 			c, _, err := vaultResolver.Client(ctx, conn)

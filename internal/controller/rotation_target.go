@@ -85,6 +85,9 @@ func (r *DatabaseCredentialRotationReconciler) buildTarget(
 			Key:   string(obj.UID),
 		},
 		NewPassword: func() (string, error) { return password.Generate(length, exclude) },
+		Warn: func(msg string) {
+			r.event(obj, corev1.EventTypeWarning, ReasonCredentialsExpired, "%s", msg)
+		},
 	}, nil
 }
 
@@ -120,6 +123,9 @@ func (r *DatabaseCredentialRotationReconciler) endpoint(
 			ep.RedisNodes = db.Redis.Nodes
 		}
 	}
+	if db.NATS != nil {
+		ep.NATSCredentialsTTL = db.NATS.CredentialsTTL.Duration
+	}
 	return ep, nil
 }
 
@@ -127,6 +133,8 @@ func (r *DatabaseCredentialRotationReconciler) masterCredentials(
 	ctx context.Context, obj *krotosv1alpha1.DatabaseCredentialRotation,
 ) (engine.Credentials, error) {
 	mc := obj.Spec.MasterCredentials
+	// NATS signs with an account key: only the seed (the "password") is needed.
+	needUser := obj.Spec.Engine != krotosv1alpha1.EngineNATS
 	switch {
 	case mc.Vault != nil:
 		store, err := r.vaultStore(ctx, obj.Namespace, mc.Vault.ConnectionRef)
@@ -142,7 +150,10 @@ func (r *DatabaseCredentialRotationReconciler) masterCredentials(
 		passKey := defaultString(mc.Vault.PasswordKey, "password")
 		u, _ := s.Data[userKey].(string)
 		p, _ := s.Data[passKey].(string)
-		if u == "" || p == "" {
+		if (needUser && u == "") || p == "" {
+			if !needUser {
+				return engine.Credentials{}, fmt.Errorf("master credentials: Vault secret %s needs string key %q", ref, passKey)
+			}
 			return engine.Credentials{}, fmt.Errorf("master credentials: Vault secret %s needs string keys %q and %q", ref, userKey, passKey)
 		}
 		return engine.Credentials{Username: u, Password: p}, nil
@@ -159,7 +170,10 @@ func (r *DatabaseCredentialRotationReconciler) masterCredentials(
 		userKey := defaultString(mc.SecretRef.UsernameKey, "username")
 		passKey := defaultString(mc.SecretRef.PasswordKey, "password")
 		u, p := string(sec.Data[userKey]), string(sec.Data[passKey])
-		if u == "" || p == "" {
+		if (needUser && u == "") || p == "" {
+			if !needUser {
+				return engine.Credentials{}, fmt.Errorf("master credentials: secret %q needs key %q", key.Name, passKey)
+			}
 			return engine.Credentials{}, fmt.Errorf("master credentials: secret %q needs keys %q and %q", key.Name, userKey, passKey)
 		}
 		return engine.Credentials{Username: u, Password: p}, nil

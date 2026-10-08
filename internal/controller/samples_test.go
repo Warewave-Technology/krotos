@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	krotosv1alpha1 "github.com/Warewave-Technology/krotos/api/v1alpha1"
+	"github.com/Warewave-Technology/krotos/internal/schedule"
 )
 
 // The samples in config/samples are documentation; this keeps them valid against
@@ -83,19 +85,23 @@ var _ = Describe("Samples", func() {
 			kinds[u.GetKind()]++
 		}
 		Expect(kinds).To(HaveKeyWithValue("VaultConnection", 2))
-		Expect(kinds).To(HaveKeyWithValue("DatabaseCredentialRotation", 4))
+		Expect(kinds).To(HaveKeyWithValue("DatabaseCredentialRotation", 5))
 
 		var list krotosv1alpha1.DatabaseCredentialRotationList
 		Expect(k8sClient.List(ctx, &list, client.InNamespace(samplesNS))).To(Succeed())
 		engines := map[krotosv1alpha1.Engine]bool{}
 		for _, r := range list.Items {
 			engines[r.Spec.Engine] = true
+			// The API cannot check this; the controller would refuse the spec.
+			planner, err := schedule.NewPlanner(&r.Spec)
+			Expect(err).NotTo(HaveOccurred(), r.Name)
+			Expect(checkCredentialsTTL(&r, planner, time.Now())).To(Succeed(), r.Name)
 			if r.Spec.PasswordPolicy.ExcludeCharacters != "" {
 				// The full reference spells out the default; it must really be the default.
 				Expect(r.Spec.PasswordPolicy.ExcludeCharacters).To(Equal(krotosv1alpha1.DefaultExcludeCharacters))
 			}
 		}
-		Expect(engines).To(HaveLen(4), "one sample per engine")
+		Expect(engines).To(HaveLen(5), "one sample per engine")
 	})
 
 	It("cover every secretSync type", func() {

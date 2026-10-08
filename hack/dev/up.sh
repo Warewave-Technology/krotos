@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Creates (or updates) a local Kind cluster "krotos-dev" with Vault, PostgreSQL,
-# MySQL, ClickHouse, Redis (primary + replica), External Secrets Operator, Vault
-# Secrets Operator, the krotos operator and four demo rotations in the namespace team-a.
+# MySQL, ClickHouse, Redis (primary + replica), NATS (operator mode), External Secrets
+# Operator, Vault Secrets Operator, the krotos operator and five demo rotations in the
+# namespace team-a.
 #
 # The cluster's kubeconfig is written to bin/krotos-dev.kubeconfig; the current
 # kubectl context is never changed. Safe to run again: existing users and Vault
@@ -39,7 +40,7 @@ make -C "$ROOT" docker-build IMG="$IMG_REPO:$IMG_TAG" >/dev/null
 
 step "Vault, PostgreSQL, MySQL, ClickHouse, Redis"
 kubectl apply -f "$DIR/deps.yaml"
-for d in vault postgres mysql clickhouse redis-primary redis-replica; do
+for d in vault postgres mysql clickhouse redis-primary redis-replica nats-box; do
   kubectl rollout status "deploy/$d" -n "$DEPS" --timeout=5m
 done
 
@@ -66,6 +67,27 @@ for d in redis-primary redis-replica; do
     kubectl exec -i -n "$DEPS" "deploy/$d" -- redis-cli --no-auth-warning -a redis-admin-pw >/dev/null
   rcli ACL SAVE >/dev/null
 done
+
+step "NATS: operator, account EVENTS, server"
+# nsc runs in the nats-box pod; its store survives on a PVC.
+nsc_run() { kubectl exec -i -n "$DEPS" deploy/nats-box -- sh -ec "$1"; }
+nsc_run '[ -d /store/nats ] && exit 0
+mkdir -p /store/nats /store/demo && nsc env -s /store/nats >/dev/null 2>&1
+nsc add operator --generate-signing-key --sys --name krotos-dev
+nsc edit operator --account-jwt-server-url nats://nats.krotos-deps.svc:4222
+nsc add account EVENTS' </dev/null
+nsc_run 'nsc generate config --nats-resolver --sys-account SYS --config-file /tmp/server.conf --force >/dev/null 2>&1
+sed "s|dir: .*|dir: \"/data/jwt\"|" /tmp/server.conf' </dev/null |
+  kubectl create configmap nats-config -n "$DEPS" --from-file=server.conf=/dev/stdin --dry-run=client -o yaml |
+  kubectl apply -f - >/dev/null
+kubectl apply -f "$DIR/nats.yaml"
+kubectl rollout status deploy/nats -n "$DEPS" --timeout=3m
+nsc_run 'for i in $(seq 1 60); do nc -z nats.krotos-deps.svc 4222 2>/dev/null && exit 0; sleep 2; done; exit 1' </dev/null
+# The signing key and user from the README template, once (ORDERS becomes EVENTS).
+sed 's/ORDERS/EVENTS/g; s/orders/events/g' "$ROOT/docs/least-privilege/nats.sh" |
+  nsc_run 'cd /store/demo; [ -f events-service.creds ] && exit 0; cat > template.sh; sh -e template.sh'
+# The server keeps pushed accounts in an emptyDir: push them on every run.
+nsc_run 'nsc push --all' </dev/null >/dev/null
 
 step "Vault: Kubernetes auth, policies, secrets"
 vault() { kubectl exec -i -n "$DEPS" deploy/vault -- vault "$@"; }
@@ -99,6 +121,12 @@ put_once secret/apps/orders/db    username=orders_app       password=orders-init
 put_once secret/apps/billing/db   username=billing_app      password=billing-initial-pw   host=mysql.$DEPS.svc
 put_once secret/apps/analytics/db username=analytics_reader password=analytics-initial-pw host=clickhouse.$DEPS.svc
 put_once secret/apps/sessions/redis username=sessions_app password=sessions-initial-pw host=redis-primary.$DEPS.svc
+# NATS: the scoped signing key's seed and the user's .creds file, from nats-box.
+from_box() { kubectl exec -n "$DEPS" deploy/nats-box -- cat "/store/demo/$1"; }
+vault kv get secret/db/nats/events-signing-key >/dev/null 2>&1 ||
+  from_box krotos-events.seed | vault kv put secret/db/nats/events-signing-key seed=- >/dev/null
+vault kv get secret/apps/events/nats >/dev/null 2>&1 ||
+  from_box events-service.creds | vault kv put secret/apps/events/nats creds=- url=nats://nats.$DEPS.svc:4222 >/dev/null
 
 step "External Secrets Operator and Vault Secrets Operator"
 helm upgrade --install external-secrets external-secrets --repo https://charts.external-secrets.io \
@@ -112,7 +140,7 @@ for i in $(seq 1 30); do
   [ "$i" = 30 ] && kubectl apply -f "$DIR/sync.yaml"
   sleep 5
 done
-for s in billing-db analytics-db sessions-redis; do
+for s in billing-db analytics-db sessions-redis events-nats; do
   until kubectl get secret "$s" -n "$NS" >/dev/null 2>&1; do sleep 2; done
 done
 
@@ -140,6 +168,9 @@ Trigger a rotation now:
 
 Read a password from Vault:
   kubectl exec -n $DEPS deploy/vault -- vault kv get secret/apps/orders/db
+
+Rotate the NATS user (issues new .creds; the old ones expire after their TTL):
+  kubectl annotate dcr events -n $NS krotos.warewave.io/rotate-now=true krotos.warewave.io/ignore-window=true
 
 Rotate the Redis user (primary and replica):
   kubectl annotate dcr sessions -n $NS krotos.warewave.io/rotate-now=true krotos.warewave.io/ignore-window=true

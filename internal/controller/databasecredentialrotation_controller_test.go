@@ -579,6 +579,35 @@ var _ = Describe("DatabaseCredentialRotation Controller", func() {
 		Expect(token).NotTo(BeEmpty())
 	})
 
+	It("looks for the password under the Vault key when secretKey is not set", func() {
+		es := "events-" + rand.String(4)
+		syncResource("external-secrets.io/v1", "ExternalSecret", es)
+		store.secrets["secret/apps/orders/db"] = &vault.Secret{Data: map[string]any{"creds": appPassword}, Version: 1}
+		sec := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: es, Namespace: testNamespace},
+			Data:       map[string][]byte{"creds": []byte(appPassword)},
+		}
+		Expect(k8sClient.Create(ctx, sec)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, sec) })
+		create(func(o *krotosv1alpha1.DatabaseCredentialRotation) {
+			o.Spec.Target.Vault.PasswordKey = "creds"
+			o.Spec.SecretSync = krotosv1alpha1.SecretSync{
+				Type:           krotosv1alpha1.SecretSyncExternalSecret,
+				ExternalSecret: &krotosv1alpha1.SyncedSecretReference{Name: es, SecretName: es},
+			}
+		})
+
+		_, obj := reconcileOnce()
+		Expect(obj.Status.Step).To(Equal(krotosv1alpha1.StepVaultWritten))
+		Expect(obj.Spec.SecretSync.ExternalSecret.SecretKey).To(BeEmpty())
+
+		sec.Data["creds"] = []byte(db.appPassword())
+		Expect(k8sClient.Update(ctx, sec)).To(Succeed())
+		_, obj = reconcileOnce()
+		Expect(obj.Status.Phase).To(Equal(krotosv1alpha1.PhaseIdle), obj.Status.Message)
+		Expect(condition(obj, krotosv1alpha1.ConditionDegraded).Status).To(Equal(metav1.ConditionFalse))
+	})
+
 	It("finishes as Degraded without restarting when the VaultStaticSecret does not sync in time", func() {
 		vss := "orders-db-" + rand.String(4)
 		api := "api-" + rand.String(4)
@@ -703,6 +732,49 @@ var _ = Describe("DatabaseCredentialRotation Controller", func() {
 		Expect(db.lastEndpoint.RedisNodes).To(Equal([]string{"redis-1:6379"}))
 	})
 
+	Context("with expiring credentials (nats)", func() {
+		var expiring *expiringDB
+		natsSpec := func(ttl time.Duration) func(*krotosv1alpha1.DatabaseCredentialRotation) {
+			return func(o *krotosv1alpha1.DatabaseCredentialRotation) {
+				o.Spec.Engine = krotosv1alpha1.EngineNATS
+				o.Spec.Database.NATS = &krotosv1alpha1.NATSSettings{CredentialsTTL: metav1.Duration{Duration: ttl}}
+				// NATS needs only the account seed; there is no username.
+				o.Spec.MasterCredentials.SecretRef.Name = "nats-master"
+			}
+		}
+
+		BeforeEach(func() {
+			expiring = &expiringDB{memDB: db, expiry: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)}
+			reconciler.Engines[krotosv1alpha1.EngineNATS] = expiring
+			ensure(&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "nats-master", Namespace: testNamespace},
+				StringData: map[string]string{"password": "SA-account-seed"},
+			})
+		})
+
+		It("refuses a TTL that one failed rotation could outlast", func() {
+			create(natsSpec(30 * 24 * time.Hour)) // rotates every 30 days
+			_, obj := reconcileOnce()
+			ready := condition(obj, krotosv1alpha1.ConditionReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal(ReasonInvalidSpec))
+			Expect(ready.Message).To(ContainSubstring("credentialsTTL (720h0m0s) must be at least twice"))
+			Expect(db.appPassword()).To(Equal(appPassword))
+		})
+
+		It("rotates with only a seed and records when the credentials expire", func() {
+			create(natsSpec(61 * 24 * time.Hour))
+			_, obj := reconcileOnce()
+			Expect(obj.Status.Phase).To(Equal(krotosv1alpha1.PhaseIdle), obj.Status.Message)
+			Expect(expiring.lastMaster).To(Equal(engine.Credentials{Password: "SA-account-seed"}))
+			Expect(db.lastEndpoint.NATSCredentialsTTL).To(Equal(61 * 24 * time.Hour))
+			Expect(obj.Status.CredentialsExpireTime).NotTo(BeNil())
+			Expect(obj.Status.CredentialsExpireTime.Time).To(BeTemporally("==", expiring.expiry))
+			Expect(testutil.ToFloat64(metrics.CredentialsExpiry.WithLabelValues(testNamespace, key.Name))).
+				To(Equal(float64(expiring.expiry.Unix())))
+		})
+	})
+
 	It("passes ClickHouse settings", func() {
 		create(func(o *krotosv1alpha1.DatabaseCredentialRotation) {
 			o.Spec.Engine = krotosv1alpha1.EngineClickHouse
@@ -714,6 +786,20 @@ var _ = Describe("DatabaseCredentialRotation Controller", func() {
 		Expect(db.lastEndpoint.TLSMode).To(Equal(krotosv1alpha1.TLSModeRequire))
 	})
 })
+
+// expiringDB is memDB with expiring credentials and a master without a username, like NATS.
+type expiringDB struct {
+	*memDB
+	expiry     time.Time
+	lastMaster engine.Credentials
+}
+
+func (d *expiringDB) SetPassword(ctx context.Context, ep engine.Endpoint, m engine.Credentials, a engine.Account, pw string) error {
+	d.lastMaster = m
+	return d.memDB.SetPassword(ctx, ep, d.master, a, pw)
+}
+
+func (d *expiringDB) ExpiresAt(string) (time.Time, bool) { return d.expiry, true }
 
 // drain returns the events recorded so far.
 func drain(r *events.FakeRecorder) []string {

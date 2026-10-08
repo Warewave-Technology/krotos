@@ -291,7 +291,8 @@ type Engine interface {
 | M7 ✅ | Metrikler, Event'ler, Helm chart, e2e (kind + testcontainers) |
 | M8 ✅ | ESO/VSO sync adımı (`secretSync`) |
 | M9 ✅ | Redis/Valkey: ACL kullanıcı parolası rotation'ı (`ACL SETUSER resetpass #sha256`, persistence `Auto`/`ACLFile`/`ConfigRewrite`/`None`, replica'lar için `nodes`); her engine için least-privilege template'leri (`docs/least-privilege/`) |
-| M10 | NATS: JWT/NKey (operator) modunda kullanıcı `.creds` rotation'ı |
+| M10 ✅ | NATS: JWT/NKey (operator) modunda kullanıcı `.creds` rotation'ı. Sunucuda değişiklik yok: account signing key (tercihen scoped) ile aynı claim'lerle yeni user JWT + NKey üretilir; eski creds `credentialsTTL` dolunca geçersizleşir (TTL ≥ 2 × en uzun rotation aralığı, controller kontrol eder). Süresi dolmuş mevcut creds rotation'ı durdurmaz (`CredentialsExpired` uyarısı). `engine.Issuer`/`engine.Expirer`, `status.credentialsExpireTime`, `secretSync.*.secretKey` varsayılanı artık `target.vault.passwordKey` |
+| M12 | NATS revocation (opsiyonel): eski kullanıcıyı account JWT'de hemen revoke et (operator signing key + system account gerekir) |
 | M11 | Redis Cluster |
 
 ### Secret source yol haritası

@@ -47,6 +47,8 @@ type Endpoint struct {
 	RedisPersistence string
 	// RedisNodes are further Redis servers ("host:port") to change the password on.
 	RedisNodes []string
+	// NATSCredentialsTTL is how long issued NATS credentials stay valid.
+	NATSCredentialsTTL time.Duration
 }
 
 // Credentials is a username and password. Its String method hides the password.
@@ -83,6 +85,24 @@ type Engine interface {
 type Preflighter interface {
 	Preflight(ctx context.Context, ep Endpoint, master Credentials) error
 }
+
+// Issuer is implemented by engines that create the new secret themselves instead
+// of taking a generated password (NATS issues a new .creds file). current is the
+// secret in use; the returned value replaces it.
+type Issuer interface {
+	Issue(ctx context.Context, ep Endpoint, master Credentials, account Account, current string) (string, error)
+}
+
+// Expirer is implemented by engines whose secrets expire.
+type Expirer interface {
+	// ExpiresAt returns when secret expires; ok is false when it does not.
+	ExpiresAt(secret string) (t time.Time, ok bool)
+}
+
+// ErrCredentialsExpired is returned by VerifyLogin when the credentials are valid
+// but past their expiry. Nothing on the server has to be undone for such
+// credentials, and replacing them is what restores access.
+var ErrCredentialsExpired = errors.New("credentials expired")
 
 // TLSConfig builds the client TLS configuration for ep. It returns nil when TLS is disabled.
 func TLSConfig(ep Endpoint) (*tls.Config, error) {

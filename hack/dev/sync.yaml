@@ -68,6 +68,19 @@ spec:
   refreshAfter: 1h
   destination: {name: analytics-db, create: true}
 ---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: events-nats
+  namespace: team-a
+spec:
+  vaultAuthRef: vso
+  type: kv-v2
+  mount: secret
+  path: apps/events/nats
+  refreshAfter: 1h
+  destination: {name: events-nats, create: true}
+---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:

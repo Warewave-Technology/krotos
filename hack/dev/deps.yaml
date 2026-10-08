@@ -233,3 +233,40 @@ metadata:
 spec:
   selector: {app: redis-replica}
   ports: [{port: 6379}]
+---
+# nsc's store (operator, accounts, keys) for the NATS demo. hack/dev/up.sh runs nsc
+# here: it creates the operator once and pushes the accounts on every run.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nsc-store
+  namespace: krotos-deps
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 100Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-box
+  namespace: krotos-deps
+spec:
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: nats-box}
+  template:
+    metadata:
+      labels: {app: nats-box}
+    spec:
+      containers:
+      - name: nats-box
+        image: natsio/nats-box:0.20.0
+        command: ["sleep", "infinity"]
+        env:
+        - {name: NKEYS_PATH, value: /store/keys}
+        - {name: NSC_HOME, value: /store/nsc}
+        volumeMounts: [{name: store, mountPath: /store}]
+      volumes:
+      - name: store
+        persistentVolumeClaim: {claimName: nsc-store}
